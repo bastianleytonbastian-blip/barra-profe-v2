@@ -3,6 +3,10 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: función nueva · PARCHE: arreglo).
 
+## 2.4.0
+- «Subir recursos»: al subir, la ventana pregunta la asignatura (antes todo se firmaba con la del perfil o, si no se sabía, Ciencias) y trae la casilla
+  «No volver a preguntar». Lo elegido se guarda por cuenta y también lo usa la subida automática; «Cambiar» vuelve a preguntar.
+
 ## 2.3.1
 - La consulta de actualizaciones usa un archivo `version.json` del release en vez de la API de GitHub, que se agota con muchos profes en una misma red.
 

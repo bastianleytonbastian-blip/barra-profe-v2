@@ -32,6 +32,7 @@ except ImportError:  # no-Windows
 
 import rutas
 import webclass_tareas as w
+from barra_utiles import asignatura_sugerida, leer_preferencia_subida, ruta_preferencia_subida
 import webclass_recursos as r
 
 CARPETA = rutas.BUZON
@@ -47,19 +48,19 @@ NIVELES_CARPETA = {**{f"{n} basico": r.NIVELES[str(n)] for n in range(1, 9)},
                    **{f"{n} medio": r.NIVELES[f"{n}M"] for n in range(1, 5)}}
 
 
-def asignatura_principal(perfil: dict) -> int:
-    """La asignatura que más dicta el docente, para firmar lo que suba."""
-    cuenta: dict[str, int] = {}
-    for nombre in perfil.get("curso_asignaturas", {}).values():
-        cuenta[(nombre or "").lower()] = cuenta.get((nombre or "").lower(), 0) + 1
-    principal = max(cuenta, key=cuenta.get) if cuenta else ""
-    return next((v for k, v in r.ASIGNATURAS.items() if k in principal),
-                r.ASIGNATURAS["ciencias"])
+def asignatura_principal(perfil: dict, nombre_perfil: str | None = None) -> int:
+    """La asignatura con que se firma lo que se sube: la que el docente eligió al subir
+    (guardada en personal\\subida_<cuenta>.json) o, si nunca eligió, la que más dicta."""
+    clave = ""
+    if nombre_perfil:
+        clave = leer_preferencia_subida(ruta_preferencia_subida(rutas.PERSONAL, nombre_perfil))["asignatura"]
+    clave = clave or asignatura_sugerida(perfil)
+    return r.ASIGNATURAS.get(clave, r.ASIGNATURAS["ciencias"])
 
 
-def destinos_del_perfil(perfil: dict) -> dict[str, tuple[list[int], int]]:
+def destinos_del_perfil(perfil: dict, nombre_perfil: str | None = None) -> dict[str, tuple[list[int], int]]:
     """Carpeta -> (nivel, asignatura). Una por nivel, más las especiales."""
-    sector = asignatura_principal(perfil)
+    sector = asignatura_principal(perfil, nombre_perfil)
     destinos = {carpeta: ([nivel], sector) for carpeta, nivel in NIVELES_CARPETA.items()}
     # Carpetas de otra asignatura que el docente ya tenga creadas a mano
     # (ej. "5 basico Orientacion"): se respetan tal cual.
@@ -201,7 +202,7 @@ def procesar(nombre_perfil: str = w.PERFIL_POR_DEFECTO, seleccion: set | None = 
     perfil = w.PERFILES[nombre_perfil]
     # Las carpetas son por nivel (1° básico a 4° medio); la asignatura con que
     # se firma sale del perfil del docente.
-    destinos = destinos_del_perfil(perfil)
+    destinos = destinos_del_perfil(perfil, nombre_perfil)
     preparar_carpetas(destinos)
     archivos = pendientes(destinos)
     if not archivos:

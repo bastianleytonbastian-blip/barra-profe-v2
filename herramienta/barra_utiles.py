@@ -354,6 +354,54 @@ def vista_previa_libro(estado: dict | None, hoy: str) -> dict:
             "aviso": origen + firma}
 
 
+# Asignaturas con que se puede firmar un recurso al subirlo (la clave es la de webclass_recursos.ASIGNATURAS).
+ASIGNATURAS_SUBIDA = (("ciencias", "Ciencias Naturales"), ("matematica", "Matemática"),
+                      ("lenguaje", "Lenguaje y Comunicación"), ("historia", "Historia, Geografía y Cs. Sociales"),
+                      ("orientacion", "Orientación"), ("tecnologia", "Tecnología"), ("biologia", "Biología"),
+                      ("quimica", "Química"), ("fisica", "Física"))
+
+
+def _sin_tildes(texto: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", texto or "") if unicodedata.category(c) != "Mn").lower()
+
+
+def asignatura_sugerida(perfil: dict) -> str:
+    """Clave de la asignatura que más dicta el docente (la de su perfil); «ciencias» si no se sabe."""
+    cuenta: dict[str, int] = {}
+    for nombre in (perfil.get("curso_asignaturas") or {}).values():
+        n = _sin_tildes(nombre)
+        cuenta[n] = cuenta.get(n, 0) + 1
+    principal = max(cuenta, key=cuenta.get) if cuenta else ""
+    # La palabra que aparece primero manda: «Historia, Geografía y Ciencias Sociales» es Historia, no Ciencias.
+    encontradas = [(principal.index(clave), clave) for clave, _ in ASIGNATURAS_SUBIDA if clave in principal]
+    return min(encontradas)[1] if encontradas else "ciencias"
+
+
+def ruta_preferencia_subida(personal: str, perfil: str) -> str:
+    """Un archivo por cuenta: así lo que elige un docente no cambia lo de otro."""
+    return os.path.join(personal, f"subida_{perfil}.json")
+
+
+def leer_preferencia_subida(ruta: str) -> dict:
+    """{'asignatura': clave o '', 'preguntar': bool}. Sin archivo o roto: no hay preferencia y se pregunta."""
+    try:
+        with open(ruta, encoding="utf-8-sig") as f:
+            datos = json.load(f)
+    except (OSError, ValueError):
+        datos = {}
+    if not isinstance(datos, dict):
+        datos = {}
+    clave = datos.get("asignatura") if datos.get("asignatura") in dict(ASIGNATURAS_SUBIDA) else ""
+    return {"asignatura": clave, "preguntar": not (clave and datos.get("preguntar") is False)}
+
+
+def guardar_preferencia_subida(ruta: str, asignatura: str, preguntar: bool) -> None:
+    if asignatura not in dict(ASIGNATURAS_SUBIDA):
+        raise ValueError(f"Asignatura desconocida: {asignatura}")
+    escribir_atomico(ruta, json.dumps({"asignatura": asignatura, "preguntar": bool(preguntar)}, ensure_ascii=False, indent=2))
+
+
 def vista_previa_subir(buzon: str) -> dict:
     """Qué subiría «Subir recursos»: los archivos que hay en cada carpeta de nivel."""
     titulo = "Subir recursos a Webclass"

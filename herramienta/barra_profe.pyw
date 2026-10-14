@@ -1783,7 +1783,10 @@ class VistaPrevia(tk.Toplevel):
             self._mostrar(vista_previa_libro(self._leer_estado_libro(),
                                              datetime.date.today().strftime("%d/%m/%Y")))
         elif tipo == "subir":
-            self._mostrar(vista_previa_subir(BUZON))
+            datos_subida = vista_previa_subir(BUZON)
+            self._mostrar(datos_subida)
+            if datos_subida.get("hay_trabajo"):
+                self._armar_asignatura()
         elif tipo in ("simular", "listar", "unidades"):
             self._calcular()
         else:
@@ -1898,11 +1901,84 @@ class VistaPrevia(tk.Toplevel):
             b.bind("<Enter>", lambda _e: None)
             b.bind("<Leave>", lambda _e: b.configure(bg=COLOR_BOTON))
 
+    # ------------------------------------------- asignatura de lo que se sube
+    def _armar_asignatura(self) -> None:
+        """«Asignatura: [ … ]  ☐ No volver a preguntar». Si ya dijo que no preguntara, solo muestra cuál es y deja cambiarla."""
+        from barra_utiles import (ASIGNATURAS_SUBIDA, asignatura_sugerida, leer_preferencia_subida,
+                                  ruta_preferencia_subida)
+        perfil = PERFIL
+        self.ruta_subida = ruta_preferencia_subida(rutas.PERSONAL, perfil)
+        pref = leer_preferencia_subida(self.ruta_subida)
+        self.nombres_asignatura = dict(ASIGNATURAS_SUBIDA)
+        clave = pref["asignatura"] or asignatura_sugerida(perfil_de_trabajo())
+        self.fila_asignatura = tk.Frame(self, bg=COLOR_FONDO)
+        self.fila_asignatura.pack(fill="x", padx=18, pady=(8, 0), before=self.aviso)
+        self.var_no_preguntar = tk.BooleanVar(value=not pref["preguntar"])
+        familia = "Segoe UI"
+        if pref["preguntar"]:
+            self._mostrar_selector(clave)
+        else:
+            tk.Label(self.fila_asignatura, text=f"Se suben como: {self.nombres_asignatura[clave]}", bg=COLOR_FONDO,
+                     fg=COLOR_TEXTO, font=(familia, 10)).pack(side="left")
+            cambiar = tk.Label(self.fila_asignatura, text="Cambiar", bg=COLOR_FONDO, fg=COLOR_ACENTO,
+                               font=(familia, 9, "underline"), cursor="hand2", takefocus=True)
+            cambiar.pack(side="left", padx=(10, 0))
+            cambiar.bind("<Button-1>", lambda _e: self._mostrar_selector(clave, desde_cambiar=True))
+            cambiar.bind("<Return>", lambda _e: self._mostrar_selector(clave, desde_cambiar=True))
+            self.clave_asignatura = clave
+            self.combo_asignatura = None
+
+    def _mostrar_selector(self, clave: str, desde_cambiar: bool = False) -> None:
+        for hijo in self.fila_asignatura.winfo_children():
+            hijo.destroy()
+        familia = "Segoe UI"
+        estilo = ttk.Style(self)
+        try:
+            estilo.theme_use("clam")
+        except tk.TclError:
+            pass
+        estilo.configure("Barra.TCombobox", fieldbackground=COLOR_FONDO, background=COLOR_BOTON,
+                         foreground=COLOR_TEXTO, arrowcolor=COLOR_ACENTO, bordercolor=COLOR_ACENTO,
+                         lightcolor=COLOR_BOTON, darkcolor=COLOR_BOTON, padding=4)
+        estilo.map("Barra.TCombobox", fieldbackground=[("readonly", COLOR_FONDO)],
+                   foreground=[("readonly", COLOR_TEXTO)])
+        self.option_add("*TCombobox*Listbox.background", COLOR_FONDO)
+        self.option_add("*TCombobox*Listbox.foreground", COLOR_TEXTO)
+        self.option_add("*TCombobox*Listbox.selectBackground", COLOR_ACENTO)
+        self.option_add("*TCombobox*Listbox.selectForeground", COLOR_FONDO)
+        tk.Label(self.fila_asignatura, text="Asignatura de estos recursos:", bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                 font=(familia, 10)).pack(side="left")
+        self.combo_asignatura = ttk.Combobox(self.fila_asignatura, values=list(self.nombres_asignatura.values()),
+                                             state="readonly", width=30, style="Barra.TCombobox", font=(familia, 10))
+        self.combo_asignatura.set(self.nombres_asignatura[clave])
+        self.combo_asignatura.pack(side="left", padx=(8, 0))
+        tk.Checkbutton(self.fila_asignatura, text="No volver a preguntar", variable=self.var_no_preguntar,
+                       bg=COLOR_FONDO, fg=COLOR_TENUE, selectcolor=COLOR_BOTON, activebackground=COLOR_FONDO,
+                       activeforeground=COLOR_TEXTO, font=(familia, 9)).pack(side="left", padx=(12, 0))
+        self.var_no_preguntar.set(False)
+        self.clave_asignatura = clave
+
+    def _guardar_asignatura(self) -> None:
+        """Guarda lo elegido (la subida automática de cada 10 minutos lo lee del mismo archivo)."""
+        if getattr(self, "fila_asignatura", None) is None:
+            return
+        from barra_utiles import guardar_preferencia_subida
+        clave = self.clave_asignatura
+        if self.combo_asignatura is not None:
+            elegida = self.combo_asignatura.get()
+            clave = next((k for k, n in self.nombres_asignatura.items() if n == elegida), clave)
+        try:
+            guardar_preferencia_subida(self.ruta_subida, clave, preguntar=not self.var_no_preguntar.get())
+        except (OSError, ValueError):
+            pass                                          # sin guardar: se sube con la que ya había
+
     def _continuar(self) -> None:
         if self.lista is not None and not self.lista.marcadas():
             self.aviso.configure(text="No hay nada marcado: marca al menos una casilla "
                                       "o cancela.", fg=COLOR_ERROR)
             return
+        if getattr(self, "tipo", None) == "subir":
+            self._guardar_asignatura()
         claves = self.lista.marcadas() if self.lista else None
         todas = self.lista.todas() if self.lista else []
         accion = self.continuar

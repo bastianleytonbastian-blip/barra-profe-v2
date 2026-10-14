@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "herramienta"))
 
@@ -730,6 +731,49 @@ class Monitores(unittest.TestCase):
         for izq, arriba, der, abajo in u.monitores():
             self.assertLess(izq, der)
             self.assertLess(arriba, abajo)
+
+
+
+class AsignaturaAlSubir(unittest.TestCase):
+    def test_sugerida_por_el_perfil_sin_importar_tildes_ni_mayusculas(self):
+        casos = [({"curso_asignaturas": {"5BA": "Matemática", "5BB": "Matemática", "6BA": "Orientación"}}, "matematica"),
+                 ({"curso_asignaturas": {"1MA": "Historia, Geografía y Ciencias Sociales"}}, "historia"),
+                 ({"curso_asignaturas": {"5BA": "Lenguaje y Comunicación"}}, "lenguaje"),
+                 ({"curso_asignaturas": {"5BA": "Ciencias Naturales"}}, "ciencias"),
+                 ({}, "ciencias"), ({"curso_asignaturas": {"5BA": "Asignatura rara"}}, "ciencias")]
+        for perfil, esperado in casos:
+            self.assertEqual(u.asignatura_sugerida(perfil), esperado, perfil)
+
+    def test_las_asignaturas_ofrecidas_existen_en_webclass(self):
+        import webclass_recursos as rec
+        for clave, nombre in u.ASIGNATURAS_SUBIDA:
+            self.assertIn(clave, rec.ASIGNATURAS, clave)
+            self.assertTrue(nombre)
+
+    def test_preferencia_guardar_leer_y_casos_raros(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ruta = u.ruta_preferencia_subida(tmp, "ana")
+            self.assertEqual(u.leer_preferencia_subida(ruta), {"asignatura": "", "preguntar": True})
+            u.guardar_preferencia_subida(ruta, "fisica", preguntar=False)
+            self.assertEqual(u.leer_preferencia_subida(ruta), {"asignatura": "fisica", "preguntar": False})
+            self.assertNotEqual(ruta, u.ruta_preferencia_subida(tmp, "beto"), "una cuenta no pisa a la otra")
+            with self.assertRaises(ValueError):
+                u.guardar_preferencia_subida(ruta, "inventada", preguntar=True)
+            for basura in ("{roto", "[]", json.dumps({"asignatura": "inventada", "preguntar": False})):
+                with open(ruta, "w", encoding="utf-8") as f:
+                    f.write(basura)
+                self.assertEqual(u.leer_preferencia_subida(ruta), {"asignatura": "", "preguntar": True}, basura)
+
+    def test_el_subidor_firma_con_lo_elegido_y_si_no_con_el_perfil(self):
+        import subir_carpeta as sc
+        import webclass_recursos as rec
+        perfil = {"curso_asignaturas": {"5BA": "Matemática"}}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(sc.rutas, "PERSONAL", tmp):
+            self.assertEqual(sc.asignatura_principal(perfil, "ana"), rec.ASIGNATURAS["matematica"])
+            u.guardar_preferencia_subida(u.ruta_preferencia_subida(tmp, "ana"), "historia", preguntar=False)
+            self.assertEqual(sc.asignatura_principal(perfil, "ana"), rec.ASIGNATURAS["historia"])
+            self.assertEqual(sc.asignatura_principal(perfil, "beto"), rec.ASIGNATURAS["matematica"], "otra cuenta no se afecta")
+            self.assertEqual(sc.destinos_del_perfil(perfil, "ana")["5 basico"], ([rec.NIVELES["5"]], rec.ASIGNATURAS["historia"]))
 
 
 if __name__ == "__main__":

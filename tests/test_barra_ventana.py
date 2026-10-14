@@ -45,6 +45,9 @@ class VentanaBarra(unittest.TestCase):
         carpeta = tempfile.mkdtemp()
         self.carpeta = carpeta
         self.mod["TOUR"] = os.path.join(carpeta, "tour.json")
+        patrulla = mock.patch.object(self.mod["rutas"], "PERSONAL", carpeta)   # lo que se elige al subir no toca tu carpeta real
+        patrulla.start()
+        self.addCleanup(patrulla.stop)
         self.mod["EJECUCIONES"] = os.path.join(carpeta, "ultimas.json")
         with open(self.mod["CONFIG"], encoding="utf-8") as f:
             herramientas = json.load(f)
@@ -60,6 +63,65 @@ class VentanaBarra(unittest.TestCase):
             pass
         import gc
         gc.collect()                    # que los objetos de Tk se liberen aquí y no en otro hilo
+
+    def _abrir_subir_con(self, archivos):
+        import tempfile
+        buzon = tempfile.mkdtemp()
+        os.makedirs(os.path.join(buzon, "5 basico"))
+        for nombre in archivos:
+            open(os.path.join(buzon, "5 basico", nombre), "w").close()
+        self.mod["BUZON"] = buzon
+        self.mod["comando_webclass"] = lambda *a, **k: [sys.executable, "-c", "pass"]
+        self.mod["abrir"]({"nombre": "Subir recursos", "tipo": "webclass", "destino": "subir",
+                           "vista_previa": "subir"}, self.barra)
+        self.barra.update()
+        return [w for w in self.barra.winfo_children() if isinstance(w, self.mod["VistaPrevia"])][0]
+
+    def _cerrar_consolas(self):
+        for w in self.barra.winfo_children():
+            if isinstance(w, self.mod["Consola"]):
+                w.destroy()
+
+    def test_subir_pregunta_la_asignatura_y_recuerda_no_volver_a_preguntar(self):
+        import barra_utiles as u
+        ruta = u.ruta_preferencia_subida(self.carpeta, self.mod["PERFIL"])
+        previa = self._abrir_subir_con(["a.pdf"])
+        self.assertIsNotNone(previa.combo_asignatura, "debe ofrecer elegir la asignatura")
+        self.assertIn("Historia, Geografía y Cs. Sociales", previa.combo_asignatura.cget("values"))
+        previa.combo_asignatura.set("Historia, Geografía y Cs. Sociales")
+        previa.var_no_preguntar.set(True)
+        previa._continuar()
+        self.assertEqual(u.leer_preferencia_subida(ruta), {"asignatura": "historia", "preguntar": False})
+        self._cerrar_consolas()
+        segunda = self._abrir_subir_con(["b.pdf"])                  # ya no pregunta: solo avisa cuál usa
+        self.assertIsNone(segunda.combo_asignatura)
+        self.assertIn("Se suben como: Historia", self._textos(segunda))
+        segunda._continuar()
+        self.assertEqual(u.leer_preferencia_subida(ruta)["asignatura"], "historia")
+        self._cerrar_consolas()
+
+    def test_subir_sin_marcar_no_volver_a_preguntar_sigue_preguntando(self):
+        import barra_utiles as u
+        ruta = u.ruta_preferencia_subida(self.carpeta, self.mod["PERFIL"])
+        previa = self._abrir_subir_con(["a.pdf"])
+        previa.combo_asignatura.set("Matemática")
+        previa._continuar()
+        self.assertEqual(u.leer_preferencia_subida(ruta), {"asignatura": "matematica", "preguntar": True})
+        self._cerrar_consolas()
+        otra = self._abrir_subir_con(["b.pdf"])
+        self.assertEqual(otra.combo_asignatura.get(), "Matemática", "recuerda la última elegida")
+        otra.destroy()
+
+    def test_cambiar_la_asignatura_guardada_vuelve_a_preguntar(self):
+        import barra_utiles as u
+        ruta = u.ruta_preferencia_subida(self.carpeta, self.mod["PERFIL"])
+        u.guardar_preferencia_subida(ruta, "historia", preguntar=False)
+        previa = self._abrir_subir_con(["a.pdf"])
+        previa._mostrar_selector("historia", desde_cambiar=True)
+        previa.combo_asignatura.set("Orientación")
+        previa._continuar()
+        self.assertEqual(u.leer_preferencia_subida(ruta), {"asignatura": "orientacion", "preguntar": True})
+        self._cerrar_consolas()
 
     def _nodo_de_prueba(self):
         """Un nodo SIN iniciar (no abre puertos): solo su historial, para probar la interfaz."""
