@@ -3,6 +3,10 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: función nueva · PARCHE: arreglo).
 
+## 2.5.2
+- Arreglo: la consulta de actualizaciones enviaba una cabecera que hacía que GitHub devolviera una copia vieja del aviso de versión;
+  por eso una barra podía decir «ya tienes la última» con una versión nueva publicada.
+
 ## 2.5.1
 - Arreglo: el pie de la barra (210 px de ancho) dejaba «Ver tour» y «Buscar actualizaciones» fuera de la vista; ahora los enlaces van en filas y todos se ven.
 - Si «Buscar actualizaciones» no logra conectarse, ahora muestra el detalle técnico del error para poder diagnosticarlo.

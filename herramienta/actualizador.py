@@ -57,7 +57,7 @@ def _url_segura(url: str) -> bool:
 def _abrir(url: str, abrir=None, timeout: int = 8):
     if not _url_segura(url):
         raise ErrorActualizacion("La dirección de descarga no es de GitHub; no se usa.")
-    pedido = urllib.request.Request(url, headers={"User-Agent": "BarraProfe-actualizador", "Accept": "*/*"})
+    pedido = urllib.request.Request(url, headers={"User-Agent": "BarraProfe-actualizador"})
     return (abrir or urllib.request.urlopen)(pedido, timeout=timeout)
 
 
