@@ -6,7 +6,7 @@ Cómo funciona:
      encima solo lo que trae el release (carpeta `herramienta\\`). Nunca toca `personal\\` ni `datos\\`.
   3. Después se corren los mismos pasos de ACTUALIZAR.bat (complementos y botones).
 
-Cada release tiene dos archivos: `barra-profe-X.Y.Z.zip` y `barra-profe-X.Y.Z.zip.sha256` (los arma `publicar.py`).
+Cada release tiene tres archivos: `barra-profe-X.Y.Z.zip`, `barra-profe-X.Y.Z.zip.sha256` y `version.json` (los arma `publicar.py`).
 Solo se descarga desde GitHub, y solo del repositorio fijo `REPO`.
 """
 
@@ -24,8 +24,9 @@ import urllib.request
 import zipfile
 
 REPO = "bastianleytonbastian-blip/barra-profe-v2"
-API = "https://api.github.com/repos/{repo}/releases/latest"
-HOSTS_PERMITIDOS = ("https://github.com/", "https://api.github.com/", "https://objects.githubusercontent.com/")
+# «latest/download» redirige al último release y no tiene el límite de consultas de la API (que en un colegio, con una sola IP, se agota).
+MANIFIESTO = "https://github.com/{repo}/releases/latest/download/version.json"
+HOSTS_PERMITIDOS = ("https://github.com/",)
 # Archivos de esta carpeta que son del docente y jamás se reemplazan ni se borran.
 PROTEGIDOS = ("registro_asignaciones.csv",)
 IGNORAR = ("__pycache__",)
@@ -52,31 +53,31 @@ def _url_segura(url: str) -> bool:
 def _abrir(url: str, abrir=None, timeout: int = 8):
     if not _url_segura(url):
         raise ErrorActualizacion("La dirección de descarga no es de GitHub; no se usa.")
-    pedido = urllib.request.Request(url, headers={"User-Agent": "BarraProfe-actualizador", "Accept": "application/vnd.github+json"})
+    pedido = urllib.request.Request(url, headers={"User-Agent": "BarraProfe-actualizador", "Accept": "*/*"})
     return (abrir or urllib.request.urlopen)(pedido, timeout=timeout)
 
 
-def interpretar_release(datos: dict) -> dict | None:
-    """Del JSON de GitHub saca versión, zip, suma y notas. None si el release no sirve."""
-    version = (datos.get("tag_name") or "").lstrip("v")
-    if not tupla(version) or datos.get("draft") or datos.get("prerelease"):
+def interpretar_manifiesto(datos: dict, repo: str = REPO) -> dict | None:
+    """Valida el `version.json` del release: versión, zip y suma deben ser de ESTE repositorio. None si no sirve."""
+    if not isinstance(datos, dict):
         return None
-    activos = {a.get("name", ""): a.get("browser_download_url", "") for a in datos.get("assets") or []}
-    zip_nombre = f"barra-profe-{version}.zip"
-    if zip_nombre not in activos or zip_nombre + ".sha256" not in activos:
+    version = str(datos.get("version") or "").lstrip("v")
+    base = f"https://github.com/{repo}/releases/download/v{version}/"
+    zip_url, sha_url = datos.get("zip", ""), datos.get("sha256", "")
+    if not tupla(version) or not (isinstance(zip_url, str) and zip_url.startswith(base) and zip_url.endswith(".zip")
+                                  and isinstance(sha_url, str) and sha_url.startswith(base) and sha_url.endswith(".sha256")):
         return None
-    return {"version": version, "zip": activos[zip_nombre], "sha256": activos[zip_nombre + ".sha256"],
-            "notas": (datos.get("body") or "").strip(), "pagina": datos.get("html_url", "")}
+    return {"version": version, "zip": zip_url, "sha256": sha_url, "notas": str(datos.get("notas") or "").strip()}
 
 
 def buscar_nueva(actual: str, repo: str = REPO, abrir=None) -> dict | None:
     """Datos del release más nuevo si es mayor que `actual`; None si está al día o no se pudo consultar (sin red, etc.)."""
     try:
-        with _abrir(API.format(repo=repo), abrir) as r:
-            datos = json.loads(r.read().decode("utf-8"))
+        with _abrir(MANIFIESTO.format(repo=repo), abrir) as r:
+            datos = json.loads(r.read().decode("utf-8-sig"))
     except (OSError, ValueError, ErrorActualizacion):
         return None
-    info = interpretar_release(datos) if isinstance(datos, dict) else None
+    info = interpretar_manifiesto(datos, repo)
     return info if info and es_mas_nueva(actual, info["version"]) else None
 
 

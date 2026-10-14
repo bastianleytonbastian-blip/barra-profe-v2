@@ -3,6 +3,9 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: función nueva · PARCHE: arreglo).
 
+## 2.3.1
+- La consulta de actualizaciones usa un archivo `version.json` del release en vez de la API de GitHub, que se agota con muchos profes en una misma red.
+
 ## 2.3.0
 - Actualizaciones en línea: al abrirse, la barra consulta si hay un release nuevo en GitHub y, si lo hay, muestra «Hay una versión nueva»;
   con un clic descarga el paquete, comprueba su suma de verificación, guarda una copia del código actual en `respaldo_actualizacion\` y lo instala.

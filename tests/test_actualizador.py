@@ -14,11 +14,9 @@ import actualizador as act  # noqa: E402
 import publicar  # noqa: E402
 
 
-def release(version="2.3.0", con_sha=True, **extra):
-    activos = [{"name": f"barra-profe-{version}.zip", "browser_download_url": f"https://github.com/x/y/releases/download/v{version}/z.zip"}]
-    if con_sha:
-        activos.append({"name": f"barra-profe-{version}.zip.sha256", "browser_download_url": "https://github.com/x/y/releases/download/s.sha256"})
-    return {"tag_name": f"v{version}", "assets": activos, "body": "Cambios", "html_url": "https://github.com/x/y/releases/tag/v" + version, **extra}
+def manifiesto(version="2.3.0", **cambios):
+    base = f"https://github.com/{act.REPO}/releases/download/v{version}/barra-profe-{version}.zip"
+    return {"version": version, "zip": base, "sha256": base + ".sha256", "notas": "Cambios", **cambios}
 
 
 class Respuesta(io.BytesIO):
@@ -38,15 +36,16 @@ class Versiones(unittest.TestCase):
         self.assertFalse(act.es_mas_nueva("", "2.3.0"))
         self.assertFalse(act.es_mas_nueva("2.2.0", "basura"))
 
-    def test_release_valido_y_descartes(self):
-        self.assertEqual(act.interpretar_release(release())["version"], "2.3.0")
-        self.assertIsNone(act.interpretar_release(release(con_sha=False)), "sin suma de verificación no se usa")
-        self.assertIsNone(act.interpretar_release(release(prerelease=True)))
-        self.assertIsNone(act.interpretar_release(release(draft=True)))
-        self.assertIsNone(act.interpretar_release({"tag_name": "nightly", "assets": []}))
+    def test_manifiesto_valido_y_descartes(self):
+        self.assertEqual(act.interpretar_manifiesto(manifiesto())["version"], "2.3.0")
+        self.assertIsNone(act.interpretar_manifiesto(manifiesto(zip="https://evil.example/a.zip")), "solo de este repositorio")
+        self.assertIsNone(act.interpretar_manifiesto(manifiesto(sha256="https://github.com/otro/repo/releases/download/v2.3.0/a.sha256")))
+        self.assertIsNone(act.interpretar_manifiesto(manifiesto("2.3.0", zip=manifiesto("2.4.0")["zip"])), "el zip debe ser de la versión anunciada")
+        self.assertIsNone(act.interpretar_manifiesto(manifiesto("nightly")))
+        self.assertIsNone(act.interpretar_manifiesto([]))
 
     def test_buscar_nueva(self):
-        abrir = lambda pedido, timeout=0: Respuesta(json.dumps(release("2.3.0")).encode())
+        abrir = lambda pedido, timeout=0: Respuesta(json.dumps(manifiesto("2.3.0")).encode())
         self.assertEqual(act.buscar_nueva("2.2.0", abrir=abrir)["version"], "2.3.0")
         self.assertIsNone(act.buscar_nueva("2.3.0", abrir=abrir), "ya está al día")
 
@@ -122,10 +121,10 @@ class Paquete(unittest.TestCase):
 
     def test_actualizar_de_punta_a_punta_con_descarga_simulada(self):
         ruta, sha = self.hacer_zip({"herramienta/VERSION": "2.3.0\n", "herramienta/nuevo.py": "nuevo"})
-        archivos = {"https://github.com/x/y/releases/download/v2.3.0/z.zip": open(ruta, "rb").read(),
-                    "https://github.com/x/y/releases/download/s.sha256": f"{sha}  barra-profe-2.3.0.zip\n".encode()}
+        m = manifiesto("2.3.0")
+        archivos = {m["zip"]: open(ruta, "rb").read(), m["sha256"]: f"{sha}  barra-profe-2.3.0.zip\n".encode()}
         abrir = lambda pedido, timeout=0: Respuesta(archivos[pedido.full_url])
-        info = act.interpretar_release(release("2.3.0"))
+        info = act.interpretar_manifiesto(manifiesto("2.3.0"))
         r = act.actualizar(info, self.herr, self.respaldo, abrir=abrir, con_pasos=False)
         self.assertEqual(r["version"], "2.3.0")
         self.assertTrue(os.path.isfile(os.path.join(self.herr, "nuevo.py")))
@@ -134,7 +133,7 @@ class Paquete(unittest.TestCase):
         def falla(*a, **k):
             raise OSError("sin red")
         with self.assertRaises(act.ErrorActualizacion):
-            act.actualizar(act.interpretar_release(release()), self.herr, self.respaldo, abrir=falla, con_pasos=False)
+            act.actualizar(act.interpretar_manifiesto(manifiesto()), self.herr, self.respaldo, abrir=falla, con_pasos=False)
         self.assertEqual(open(os.path.join(self.herr, "VERSION")).read().strip(), "2.2.0")
 
 
@@ -150,6 +149,8 @@ class Publicar(unittest.TestCase):
         self.assertIn("herramienta/actualizador.py", nombres)
         self.assertIn("herramienta/planificador/servidor.py", nombres)
         self.assertEqual(open(ruta_sha).read().split()[0], act.suma_sha256(ruta))
+        datos = json.load(open(publicar.armar_manifiesto("9.9.9", "notas", salida=tmp, repo=act.REPO), encoding="utf-8"))
+        self.assertEqual(act.interpretar_manifiesto(datos)["version"], "9.9.9", "lo que publica es lo que la barra acepta")
 
     def test_las_notas_salen_de_cambios(self):
         from barra_utiles import leer_version

@@ -10,6 +10,7 @@ No se incluye nada de `personal\\` ni `datos\\` (no están dentro de `herramient
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -50,6 +51,15 @@ def armar_zip(version: str, carpeta: str = AQUI, salida: str = SALIDA) -> tuple[
     return ruta, ruta_sha
 
 
+def armar_manifiesto(version: str, notas: str, salida: str = SALIDA, repo: str = actualizador.REPO) -> str:
+    """version.json: lo que consulta la barra de cada docente para saber si hay algo nuevo."""
+    base = f"https://github.com/{repo}/releases/download/v{version}/barra-profe-{version}.zip"
+    ruta = os.path.join(salida, "version.json")
+    with open(ruta, "w", encoding="utf-8", newline="\n") as f:
+        json.dump({"version": version, "zip": base, "sha256": base + ".sha256", "notas": notas}, f, ensure_ascii=False, indent=2)
+    return ruta
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--subir", action="store_true", help="crear el release en GitHub")
@@ -62,11 +72,12 @@ def main() -> None:
     if not notas:
         raise SystemExit(f"CAMBIOS.md no tiene una sección «## {version}». Anota qué cambió antes de publicar.")
     ruta, ruta_sha = armar_zip(version)
+    ruta_json = armar_manifiesto(version, notas)
     print(f"Paquete: {ruta}\nSuma:    {ruta_sha}\nNotas:\n{notas}\n")
     if not args.subir:
         print("(Solo se armó el paquete. Usa --subir para publicarlo en GitHub.)")
         return
-    orden = ["gh", "release", "create", f"v{version}", ruta, ruta_sha, "--repo", actualizador.REPO,
+    orden = ["gh", "release", "create", f"v{version}", ruta, ruta_sha, ruta_json, "--repo", actualizador.REPO,
              "--title", f"Barra Profe {version}", "--notes", notas]
     sys.exit(subprocess.run(orden).returncode)
 
