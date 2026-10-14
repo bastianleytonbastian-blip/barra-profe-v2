@@ -3,6 +3,10 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: función nueva · PARCHE: arreglo).
 
+## 2.5.1
+- Arreglo: el pie de la barra (210 px de ancho) dejaba «Ver tour» y «Buscar actualizaciones» fuera de la vista; ahora los enlaces van en filas y todos se ven.
+- Si «Buscar actualizaciones» no logra conectarse, ahora muestra el detalle técnico del error para poder diagnosticarlo.
+
 ## 2.5.0
 - Nuevo enlace «Buscar actualizaciones» en el pie de la barra: consulta GitHub al momento y avisa si estás al día o si no pudo conectarse.
 - Se elimina la tarea automática de las 16:00 (asignar las clases del día). El instalador ya no la crea y ACTUALIZAR.bat / INSTALAR.bat la borran

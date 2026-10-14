@@ -4551,8 +4551,15 @@ class Barra(RAIZ_TK):
         pie = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
         pie.pack(fill="x", padx=10, pady=(0, 6))
         self.pie_botones = pie
+        # La barra mide ~210 px: los enlaces van en filas para que ninguno quede oculto a la derecha.
+        fila_pie1 = tk.Frame(pie, bg=COLOR_FONDO)
+        fila_pie1.pack(fill="x")
+        fila_pie2 = tk.Frame(pie, bg=COLOR_FONDO)
+        fila_pie2.pack(fill="x")
+        fila_pie3 = tk.Frame(pie, bg=COLOR_FONDO)
+        fila_pie3.pack(fill="x")
         for texto_enlace, ruta in (("Ver registro", LOG), ("Editar botones", CONFIG)):
-            enlace = tk.Label(pie, text=texto_enlace, bg=COLOR_FONDO, fg=COLOR_SUAVE,
+            enlace = tk.Label(fila_pie1, text=texto_enlace, bg=COLOR_FONDO, fg=COLOR_SUAVE,
                               font=(self.fuente.cget("family"), 9, "underline"),
                               cursor="hand2", takefocus=True, highlightthickness=1,
                               highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
@@ -4562,7 +4569,7 @@ class Barra(RAIZ_TK):
                 enlace.bind(tecla, lambda _e, r=ruta: (self._abrir_archivo(r), "break")[1])
             enlace.bind("<Enter>", lambda _e, w=enlace: w.configure(fg=COLOR_TEXTO))
             enlace.bind("<Leave>", lambda _e, w=enlace: w.configure(fg=COLOR_SUAVE))
-        tour = tk.Label(pie, text="Ver tour", bg=COLOR_FONDO, fg=COLOR_SUAVE,
+        tour = tk.Label(fila_pie2, text="Ver tour", bg=COLOR_FONDO, fg=COLOR_SUAVE,
                         font=(self.fuente.cget("family"), 9, "underline"), cursor="hand2",
                         takefocus=True, highlightthickness=1,
                         highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
@@ -4572,7 +4579,7 @@ class Barra(RAIZ_TK):
             tour.bind(tecla, lambda _e: (self.iniciar_tour(), "break")[1])
         tour.bind("<Enter>", lambda _e: tour.configure(fg=COLOR_TEXTO))
         tour.bind("<Leave>", lambda _e: tour.configure(fg=COLOR_SUAVE))
-        buscar = tk.Label(pie, text="Buscar actualizaciones", bg=COLOR_FONDO, fg=COLOR_SUAVE,
+        buscar = tk.Label(fila_pie2, text="Buscar actualizaciones", bg=COLOR_FONDO, fg=COLOR_SUAVE,
                           font=(self.fuente.cget("family"), 9, "underline"), cursor="hand2",
                           takefocus=True, highlightthickness=1,
                           highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
@@ -4585,11 +4592,12 @@ class Barra(RAIZ_TK):
         from barra_utiles import leer_version
         version = leer_version(CARPETA)
         if version:                                  # versión de Barra, discreta, al final de la fila
-            tk.Label(pie, text=f"v{version}", bg=COLOR_FONDO, fg=COLOR_SUAVE,
-                     font=(self.fuente.cget("family"), 9)).pack(side="right")
-        self.aviso_actualizacion = tk.Label(pie, text="", bg=COLOR_FONDO, fg=COLOR_ACENTO, cursor="hand2",
-                                            font=(self.fuente.cget("family"), 9, "underline"))
-        self.aviso_actualizacion.pack(side="right", padx=(0, 10))
+            tk.Label(fila_pie3, text=f"v{version}", bg=COLOR_FONDO, fg=COLOR_SUAVE,
+                     font=(self.fuente.cget("family"), 9)).pack(side="left")
+        self.aviso_actualizacion = tk.Label(fila_pie3, text="", bg=COLOR_FONDO, fg=COLOR_ACENTO, cursor="hand2",
+                                            font=(self.fuente.cget("family"), 9, "underline"), justify="left",
+                                            wraplength=self.ancho - int(70 * self.escala))
+        self.aviso_actualizacion.pack(side="left", padx=(8, 0))
         if version and not getattr(self, "_busqueda_actualizacion", False):
             self._busqueda_actualizacion = True          # una sola consulta por sesión, sin bloquear la ventana
             threading.Thread(target=self._buscar_actualizacion, args=(version,), daemon=True).start()
@@ -4610,9 +4618,15 @@ class Barra(RAIZ_TK):
                 if manual:
                     self._preguntar_actualizar(info)
             elif manual:
-                messagebox.showinfo("Barra Profe", f"Ya tienes la última versión (v{version})." if hubo_red else
-                                    "No pude consultar si hay una versión nueva. Revisa tu conexión a internet "
-                                    "e inténtalo de nuevo.")
+                if hubo_red:
+                    texto = f"Ya tienes la última versión (v{version})."
+                else:
+                    texto = ("No pude consultar si hay una versión nueva. Revisa tu conexión a internet "
+                             "e inténtalo de nuevo.")
+                    detalle = getattr(sys.modules.get("actualizador"), "ULTIMO_ERROR", "")
+                    if detalle:
+                        texto += f"\n\nDetalle técnico: {detalle}"
+                messagebox.showinfo("Barra Profe", texto)
         try:
             self.after(0, mostrar)
         except (tk.TclError, RuntimeError):

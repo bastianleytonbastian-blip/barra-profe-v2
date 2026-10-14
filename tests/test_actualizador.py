@@ -56,6 +56,9 @@ class Versiones(unittest.TestCase):
         def falla(*a, **k):
             raise OSError("sin red")
         self.assertEqual(act.consultar("2.2.0", abrir=falla), (None, False))
+        self.assertIn("sin red", act.ULTIMO_ERROR, "el motivo queda a la vista para diagnosticar")
+        act.consultar("2.2.0", abrir=ok)
+        self.assertEqual(act.ULTIMO_ERROR, "")
 
     def test_sin_red_no_molesta(self):
         def falla(*a, **k):

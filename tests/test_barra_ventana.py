@@ -164,6 +164,25 @@ class VentanaBarra(unittest.TestCase):
         self.assertIn("Ya tienes la última versión", mensajes[0])
         self.assertIn("No pude consultar", mensajes[1])
 
+    def test_el_pie_cabe_en_la_barra_y_ningun_enlace_queda_oculto(self):
+        self.barra.update()
+        ancho = self.barra.winfo_width()
+        pie = self.barra.pie_botones
+        enlaces = []
+        def recorrer(w):
+            for h in w.winfo_children():
+                if h.winfo_class() == "Label" and h.cget("text"):
+                    enlaces.append(h)
+                recorrer(h)
+        recorrer(pie)
+        textos = [e.cget("text") for e in enlaces]
+        for esperado in ("Ver registro", "Editar botones", "Ver tour", "Buscar actualizaciones"):
+            self.assertIn(esperado, textos)
+        for e in enlaces:
+            derecha = e.winfo_rootx() + e.winfo_width() - self.barra.winfo_rootx()
+            self.assertLessEqual(derecha, ancho, f"«{e.cget('text')}» se sale de la barra ({derecha} > {ancho})")
+            self.assertGreaterEqual(e.winfo_width(), e.winfo_reqwidth(), f"«{e.cget('text')}» queda recortado")
+
     def _nodo_de_prueba(self):
         """Un nodo SIN iniciar (no abre puertos): solo su historial, para probar la interfaz."""
         import mensajeria_red as M

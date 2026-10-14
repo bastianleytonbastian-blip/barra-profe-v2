@@ -32,6 +32,10 @@ PROTEGIDOS = ("registro_asignaciones.csv",)
 IGNORAR = ("__pycache__",)
 
 
+# Motivo técnico de la última consulta que falló (vacío si salió bien); la barra lo muestra para diagnosticar.
+ULTIMO_ERROR = ""
+
+
 class ErrorActualizacion(Exception):
     """Algo salió mal; el mensaje está escrito para mostrárselo al docente."""
 
@@ -72,10 +76,13 @@ def interpretar_manifiesto(datos: dict, repo: str = REPO) -> dict | None:
 
 def consultar(actual: str, repo: str = REPO, abrir=None) -> tuple[dict | None, bool]:
     """(release más nuevo si es mayor que `actual` o None, si se pudo consultar). Sirve para distinguir «al día» de «sin red»."""
+    global ULTIMO_ERROR
+    ULTIMO_ERROR = ""
     try:
         with _abrir(MANIFIESTO.format(repo=repo), abrir) as r:
             datos = json.loads(r.read().decode("utf-8-sig"))
-    except (OSError, ValueError, ErrorActualizacion):
+    except (OSError, ValueError, ErrorActualizacion) as exc:
+        ULTIMO_ERROR = f"{type(exc).__name__}: {exc}"[:200]        # para que «sin conexión» diga por qué
         return None, False
     info = interpretar_manifiesto(datos, repo)
     return (info if info and es_mas_nueva(actual, info["version"]) else None), info is not None
