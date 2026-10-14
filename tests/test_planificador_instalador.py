@@ -114,6 +114,38 @@ class BotonesDeCadaDocente(unittest.TestCase):
             self.assertEqual(f.read(), "{esto no es json")
 
 
+class TareaDeLas16(unittest.TestCase):
+    """La tarea programada de las 16:00 ya no existe: no se crea y se retira de los PC que la tenían."""
+
+    def test_retirar_borra_solo_esa_tarea(self):
+        from unittest import mock
+        llamadas = []
+        def falso(orden, **kw):
+            llamadas.append(orden)
+            return subprocess.CompletedProcess(orden, 0, "", "")
+        with mock.patch.object(instalar.subprocess, "run", falso), contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(instalar.retirar_tarea_asignar())
+        self.assertEqual(llamadas, [["schtasks", "/delete", "/f", "/tn", instalar.TAREA_ASIGNAR]])
+
+    def test_si_no_habia_tarea_no_pasa_nada(self):
+        from unittest import mock
+        falso = lambda orden, **kw: subprocess.CompletedProcess(orden, 1, "", "no existe")
+        with mock.patch.object(instalar.subprocess, "run", falso), contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(instalar.retirar_tarea_asignar())
+
+    def test_instalar_solo_crea_la_subida_automatica(self):
+        from unittest import mock
+        llamadas = []
+        def falso(orden, **kw):
+            llamadas.append(orden)
+            return subprocess.CompletedProcess(orden, 0, "", "")
+        with mock.patch.object(instalar.subprocess, "run", falso), contextlib.redirect_stdout(io.StringIO()):
+            instalar.tareas_programadas("ana")
+        creadas = [o[o.index("/tn") + 1] for o in llamadas if "/create" in o]
+        self.assertEqual(creadas, [instalar.TAREA_SUBIR])
+        self.assertNotIn("16:00", " ".join(" ".join(o) for o in llamadas))
+
+
 class PlantillaQueSeReparte(unittest.TestCase):
     def setUp(self):
         with open(os.path.join(comun.HERRAMIENTA, "herramientas.json"), encoding="utf-8-sig") as f:

@@ -457,21 +457,26 @@ def barra_al_inicio() -> None:
         print(f"   No se pudo dejar al inicio ({exc}). Ábrela a mano cuando quieras.")
 
 
+def retirar_tarea_asignar() -> bool:
+    """Quita la tarea de las 16:00 («asignar las clases del día»), que ya no se usa: la asignación se hace con el
+    botón de la barra. Es seguro repetirlo. Devuelve True si había una tarea y se eliminó."""
+    try:
+        r = subprocess.run(["schtasks", "/delete", "/f", "/tn", TAREA_ASIGNAR], capture_output=True, text=True)
+    except OSError:
+        return False
+    for resto in ("tarea_asignacion.bat",):                  # el lanzador que generaba el instalador
+        try:
+            os.remove(os.path.join(GENERADOS, resto))
+        except OSError:
+            pass
+    if r.returncode == 0:
+        print(f"   {TAREA_ASIGNAR}: eliminada (las clases se asignan con el botón de la barra)")
+    return r.returncode == 0
+
+
 def tareas_programadas(clave: str) -> None:
     paso("Tareas programadas")
-    os.makedirs(GENERADOS, exist_ok=True)
-    # schtasks no acepta más de 261 caracteres en /tr, y las rutas largas se
-    # pasan de ahí: la orden completa se deja en un .bat y la tarea llama al .bat.
-    lanzador = os.path.join(GENERADOS, "tarea_asignacion.bat")
-    programa, argumentos = orden("asignar", "--hoy", "--dias-atras", "7", "--perfil", clave)
-    with open(lanzador, "w", encoding="ascii", errors="replace", newline="\r\n") as f:
-        f.write("@echo off\r\n"
-                "REM Lo que corre la tarea programada de las 16:00. Lo genera el instalador.\r\n"
-                "chcp 65001 >nul\r\n"
-                "set PYTHONIOENCODING=utf-8\r\n"
-                'cd /d "%~dp0"\r\n'
-                f'{como_texto(programa, argumentos)} >> ejecucion_log.txt 2>&1\r\n')
-    asignar = f'"{lanzador}"'
+    retirar_tarea_asignar()
     if EMPAQUETADO:
         # El .exe no tiene versión "sin consola": la tarea corre oculta igual,
         # porque el Programador la lanza sin sesión interactiva.
@@ -480,8 +485,6 @@ def tareas_programadas(clave: str) -> None:
         subir = como_texto(PYW, [os.path.join(CARPETA, "subir_carpeta.py"),
                                  "--perfil", clave])
     ordenes = [
-        ["schtasks", "/create", "/f", "/tn", TAREA_ASIGNAR, "/sc", "daily", "/st", "16:00",
-         "/tr", asignar],
         ["schtasks", "/create", "/f", "/tn", TAREA_SUBIR, "/sc", "minute", "/mo", "10",
          "/tr", subir],
     ]
@@ -521,13 +524,14 @@ def main() -> None:
     planificador_en_botones()
     botones_nuevos_en_propios()
     botones_retirados_de_propios()
+    retirar_tarea_asignar()
 
     if args.actualizar:
         clave = perfil_disponible()
         print("\n=== Actualizado ===")
         print("  El código quedó al día.")
         print(f"  Perfil: {clave or '(ninguno: corre INSTALAR.bat)'}")
-        print("  Tus botones, registros, accesos y tareas quedaron como estaban.")
+        print("  Tus botones, registros y accesos quedaron como estaban (la tarea de las 16:00 ya no existe).")
         print("\n  Cierra la barra y vuelve a abrirla para que tome los cambios.")
         return
 
@@ -543,7 +547,7 @@ def main() -> None:
     print("\n=== Listo ===")
     print("Desde ahora:")
     print("  · Deja archivos en «Subir a Webclass\\<curso>» y se suben solos cada 10 min.")
-    print("  · A las 16:00 se asignan las clases del día (y se recuperan las de 7 días).")
+    print("  · Las clases se asignan con el botón de la barra (ya no hay tarea automática a las 16:00).")
     print("  · Los accesos del escritorio hacen lo mismo cuando tú quieras.")
     print(f"\nSi cambian tus cursos o unidades:  python configurar.py --perfil {clave} --solo-actualizar")
 

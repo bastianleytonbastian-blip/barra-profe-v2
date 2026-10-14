@@ -30,7 +30,7 @@ INSTALACION (una sola vez)
        (1 basico a 4 medio): lo que dejes ahi se sube solo al banco de
        recursos cada 10 minutos,
      · los accesos directos en el escritorio,
-     · una tarea que a las 16:00 asigna las clases del dia,
+     · una tarea que cada 10 minutos sube lo que dejaste en esa carpeta,
      · la barra flotante al iniciar Windows.
 
 

@@ -70,15 +70,20 @@ def interpretar_manifiesto(datos: dict, repo: str = REPO) -> dict | None:
     return {"version": version, "zip": zip_url, "sha256": sha_url, "notas": str(datos.get("notas") or "").strip()}
 
 
-def buscar_nueva(actual: str, repo: str = REPO, abrir=None) -> dict | None:
-    """Datos del release más nuevo si es mayor que `actual`; None si está al día o no se pudo consultar (sin red, etc.)."""
+def consultar(actual: str, repo: str = REPO, abrir=None) -> tuple[dict | None, bool]:
+    """(release más nuevo si es mayor que `actual` o None, si se pudo consultar). Sirve para distinguir «al día» de «sin red»."""
     try:
         with _abrir(MANIFIESTO.format(repo=repo), abrir) as r:
             datos = json.loads(r.read().decode("utf-8-sig"))
     except (OSError, ValueError, ErrorActualizacion):
-        return None
+        return None, False
     info = interpretar_manifiesto(datos, repo)
-    return info if info and es_mas_nueva(actual, info["version"]) else None
+    return (info if info and es_mas_nueva(actual, info["version"]) else None), info is not None
+
+
+def buscar_nueva(actual: str, repo: str = REPO, abrir=None) -> dict | None:
+    """Datos del release más nuevo si es mayor que `actual`; None si está al día o no se pudo consultar (sin red, etc.)."""
+    return consultar(actual, repo, abrir)[0]
 
 
 def _bajar(url: str, destino: str, abrir=None) -> None:

@@ -49,6 +49,14 @@ class Versiones(unittest.TestCase):
         self.assertEqual(act.buscar_nueva("2.2.0", abrir=abrir)["version"], "2.3.0")
         self.assertIsNone(act.buscar_nueva("2.3.0", abrir=abrir), "ya está al día")
 
+    def test_consultar_distingue_al_dia_de_sin_red(self):
+        ok = lambda pedido, timeout=0: Respuesta(json.dumps(manifiesto("2.3.0")).encode())
+        self.assertEqual(act.consultar("2.3.0", abrir=ok), (None, True), "al día: se pudo consultar y no hay nada")
+        self.assertEqual(act.consultar("2.2.0", abrir=ok)[1], True)
+        def falla(*a, **k):
+            raise OSError("sin red")
+        self.assertEqual(act.consultar("2.2.0", abrir=falla), (None, False))
+
     def test_sin_red_no_molesta(self):
         def falla(*a, **k):
             raise OSError("sin red")

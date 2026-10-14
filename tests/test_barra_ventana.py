@@ -86,15 +86,15 @@ class VentanaBarra(unittest.TestCase):
         import barra_utiles as u
         ruta = u.ruta_preferencia_subida(self.carpeta, self.mod["PERFIL"])
         previa = self._abrir_subir_con(["a.pdf"])
-        self.assertIsNotNone(previa.combo_asignatura, "debe ofrecer elegir la asignatura")
-        self.assertIn("Historia, Geografía y Cs. Sociales", previa.combo_asignatura.cget("values"))
-        previa.combo_asignatura.set("Historia, Geografía y Cs. Sociales")
-        previa.var_no_preguntar.set(True)
+        self.assertIsNotNone(previa.selector_asignatura.combo, "debe ofrecer elegir la asignatura")
+        self.assertIn("Historia, Geografía y Cs. Sociales", previa.selector_asignatura.combo.cget("values"))
+        previa.selector_asignatura.combo.set("Historia, Geografía y Cs. Sociales")
+        previa.selector_asignatura.var_no_preguntar.set(True)
         previa._continuar()
         self.assertEqual(u.leer_preferencia_subida(ruta), {"asignatura": "historia", "preguntar": False})
         self._cerrar_consolas()
         segunda = self._abrir_subir_con(["b.pdf"])                  # ya no pregunta: solo avisa cuál usa
-        self.assertIsNone(segunda.combo_asignatura)
+        self.assertIsNone(segunda.selector_asignatura.combo)
         self.assertIn("Se suben como: Historia", self._textos(segunda))
         segunda._continuar()
         self.assertEqual(u.leer_preferencia_subida(ruta)["asignatura"], "historia")
@@ -104,12 +104,12 @@ class VentanaBarra(unittest.TestCase):
         import barra_utiles as u
         ruta = u.ruta_preferencia_subida(self.carpeta, self.mod["PERFIL"])
         previa = self._abrir_subir_con(["a.pdf"])
-        previa.combo_asignatura.set("Matemática")
+        previa.selector_asignatura.combo.set("Matemática")
         previa._continuar()
         self.assertEqual(u.leer_preferencia_subida(ruta), {"asignatura": "matematica", "preguntar": True})
         self._cerrar_consolas()
         otra = self._abrir_subir_con(["b.pdf"])
-        self.assertEqual(otra.combo_asignatura.get(), "Matemática", "recuerda la última elegida")
+        self.assertEqual(otra.selector_asignatura.combo.get(), "Matemática", "recuerda la última elegida")
         otra.destroy()
 
     def test_cambiar_la_asignatura_guardada_vuelve_a_preguntar(self):
@@ -117,11 +117,52 @@ class VentanaBarra(unittest.TestCase):
         ruta = u.ruta_preferencia_subida(self.carpeta, self.mod["PERFIL"])
         u.guardar_preferencia_subida(ruta, "historia", preguntar=False)
         previa = self._abrir_subir_con(["a.pdf"])
-        previa._mostrar_selector("historia", desde_cambiar=True)
-        previa.combo_asignatura.set("Orientación")
+        previa.selector_asignatura.mostrar_selector()
+        previa.selector_asignatura.combo.set("Orientación")
         previa._continuar()
         self.assertEqual(u.leer_preferencia_subida(ruta), {"asignatura": "orientacion", "preguntar": True})
         self._cerrar_consolas()
+
+    def test_arrastrar_muestra_la_asignatura_y_la_guarda(self):
+        import barra_utiles as u
+        ruta = u.ruta_preferencia_subida(self.carpeta, self.mod["PERFIL"])
+        buzon = os.path.join(self.carpeta, "buzon")
+        os.makedirs(os.path.join(buzon, "5 basico"))
+        self.mod["BUZON"] = buzon
+        origen = os.path.join(self.carpeta, "guia.pdf")
+        with open(origen, "wb") as f:
+            f.write(b"%PDF contenido")
+        soltar = self.mod["VentanaSoltar"](self.barra, [origen])
+        self.barra.update()
+        sel = soltar.selector_asignatura
+        self.assertIsNotNone(sel.combo, "la primera vez muestra dónde se subirá y deja elegir")
+        sel.combo.set("Orientación")
+        sel.var_no_preguntar.set(True)
+        soltar._copiar("5 basico")
+        self.assertEqual(u.leer_preferencia_subida(ruta), {"asignatura": "orientacion", "preguntar": False})
+        self.assertIn("Orientación", soltar.aviso.cget("text"))
+        soltar.destroy()
+        otra = self.mod["VentanaSoltar"](self.barra, [origen])
+        self.barra.update()
+        self.assertIsNone(otra.selector_asignatura.combo, "con «no volver a preguntar» solo informa")
+        otra.destroy()
+
+    def test_la_barra_tiene_buscar_actualizaciones_y_avisa_del_resultado(self):
+        import actualizador
+        from unittest import mock
+        textos = self._textos(self.barra)
+        self.assertIn("Buscar actualizaciones", textos)
+        mensajes = []
+        mb = mock.Mock(showinfo=lambda t, m: mensajes.append(m))
+        with mock.patch.dict(self.mod, {"messagebox": mb}):
+            with mock.patch.object(actualizador, "consultar", lambda v: (None, True)):
+                self.barra._buscar_actualizacion("2.4.1", manual=True)
+                self.barra.update()
+            with mock.patch.object(actualizador, "consultar", lambda v: (None, False)):
+                self.barra._buscar_actualizacion("2.4.1", manual=True)
+                self.barra.update()
+        self.assertIn("Ya tienes la última versión", mensajes[0])
+        self.assertIn("No pude consultar", mensajes[1])
 
     def _nodo_de_prueba(self):
         """Un nodo SIN iniciar (no abre puertos): solo su historial, para probar la interfaz."""

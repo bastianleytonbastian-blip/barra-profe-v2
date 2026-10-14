@@ -3,6 +3,15 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: función nueva · PARCHE: arreglo).
 
+## 2.5.0
+- Nuevo enlace «Buscar actualizaciones» en el pie de la barra: consulta GitHub al momento y avisa si estás al día o si no pudo conectarse.
+- Se elimina la tarea automática de las 16:00 (asignar las clases del día). El instalador ya no la crea y ACTUALIZAR.bat / INSTALAR.bat la borran
+  si existía; las clases se asignan con el botón de la barra. La subida automática de recursos (cada 10 minutos) sigue igual.
+
+## 2.4.1
+- Al arrastrar archivos a la barra, la ventana también muestra con qué asignatura se subirán y deja elegirla (con «No volver a preguntar»).
+  Es la misma elección de «Subir recursos» y vale para todo lo que haya en el buzón cuando corra la subida automática.
+
 ## 2.4.0
 - «Subir recursos»: al subir, la ventana pregunta la asignatura (antes todo se firmaba con la del perfil o, si no se sabía, Ciencias) y trae la casilla
   «No volver a preguntar». Lo elegido se guarda por cuenta y también lo usa la subida automática; «Cambiar» vuelve a preguntar.
