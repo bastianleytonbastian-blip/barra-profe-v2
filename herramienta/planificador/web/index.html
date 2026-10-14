@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="planificador-token" content="__TOKEN__">
+<title>Planificador de Clases</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231F3B57'/><path d='M9 8h14v3H9zm0 6h14v3H9zm0 6h9v3H9z' fill='white'/></svg>">
+<link rel="stylesheet" href="/css/estilos.css">
+</head>
+<body>
+<div class="app">
+  <aside class="lateral" id="lateral">
+    <div class="marca">
+      <span class="marca-icono" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h10"/></svg>
+      </span>
+      <span class="marca-texto">Planificador<small id="docente-nombre"></small></span>
+    </div>
+    <nav class="menu" id="menu" aria-label="Secciones">
+      <a href="#/planificar" data-ruta="planificar"><span class="ico" data-ico="plan"></span>Planificar una clase</a>
+      <a href="#/guia-pie" data-ruta="guia-pie"><span class="ico" data-ico="pie"></span>Guía PIE</a>
+      <a href="#/webclass" data-ruta="webclass"><span class="ico" data-ico="subir"></span>Subir a WebClass</a>
+      <a href="#/perfil" data-ruta="perfil"><span class="ico" data-ico="perfil"></span>Mi perfil</a>
+    </nav>
+    <button class="estado-ia" id="estado-ia" type="button">
+      <span class="punto" id="punto-ia"></span>
+      <span id="texto-ia">Revisando IA…</span>
+    </button>
+    <button class="btn chico cerrar-app" id="cerrar-app" type="button" title="Detiene el servidor del planificador">Cerrar el planificador</button>
+    <div class="version" id="version-app" title="Versión del planificador y de Barra Profe"></div>
+  </aside>
+  <main class="contenido" id="contenido" tabindex="-1"></main>
+</div>
+
+<dialog id="dialogo-ia" class="dialogo">
+  <form method="dialog" class="dialogo-caja" id="form-ia"></form>
+</dialog>
+<div class="avisos" id="avisos" role="status" aria-live="polite"></div>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

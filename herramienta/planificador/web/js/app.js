@@ -1,0 +1,122 @@
+// Enrutador, estado de la IA y datos compartidos (perfil).
+import { api } from "./api.js";
+import { compartido, recargarIA, recargarPerfil } from "./estado.js";
+import { $, $$, aviso, esc, pintarIconos } from "./util.js";
+import { montarPlanificar } from "./planificar.js";
+import { montarPie } from "./pie.js";
+import { montarRecurso } from "./recurso.js";
+import { montarPerfil } from "./perfil.js";
+
+const RUTAS = {
+  planificar: montarPlanificar,
+  "guia-pie": montarPie,
+  webclass: montarRecurso,
+  perfil: montarPerfil,
+};
+
+async function navegar() {
+  const ruta = (location.hash.replace(/^#\//, "") || "planificar").split("?")[0];
+  const montar = RUTAS[ruta] || RUTAS.planificar;
+  $$("#menu a").forEach((a) => (a.dataset.ruta === ruta ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
+  const cont = $("#contenido");
+  cont.innerHTML = "";
+  try {
+    await montar(cont);
+  } catch (e) {
+    cont.innerHTML = `<div class="nota error">No se pudo cargar esta sección: ${esc(e.message)}</div>`;
+  }
+  cont.focus({ preventScroll: true });
+  window.scrollTo(0, 0);
+}
+
+// ── Diálogo de claves y proveedor de IA ──
+async function abrirDialogoIA() {
+  const ia = await recargarIA();
+  const form = $("#form-ia");
+  const filas = Object.entries(ia.proveedores || {}).map(([nombre, p]) => `
+    <div class="campo">
+      <label for="clave-${esc(nombre)}">${esc(nombre)} ${p.guardada ? `<span class="ayuda">· guardada ${esc(p.final)}</span>` : ""}</label>
+      <input type="password" id="clave-${esc(nombre)}" data-prov="${esc(nombre)}" autocomplete="off"
+             placeholder="${p.guardada ? "Deja vacío para conservarla" : "Pega tu clave"}">
+      <span class="ayuda">Clave gratuita en <b>${esc(p.ayuda)}</b></span>
+    </div>`).join("");
+  const conClave = Object.entries(ia.proveedores || {}).filter(([, p]) => p.guardada).map(([n]) => n);
+  form.innerHTML = `
+    <div><h2>Conectar la IA</h2>
+    <p class="sub">Basta con una clave. Con varias, la app pasa sola a la siguiente cuando una llega a su límite. Las claves se guardan solo en este equipo.</p></div>
+    ${filas}
+    <div class="rejilla">
+      <div class="campo"><label for="prov-principal">Proveedor principal</label>
+        <select id="prov-principal">${conClave.map((n) => `<option ${n === ia.proveedor ? "selected" : ""}>${esc(n)}</option>`).join("") || "<option value=''>Guarda una clave primero</option>"}</select></div>
+      <div class="campo"><label for="modelo-ia">Modelo</label><select id="modelo-ia"><option value="">Automático</option></select></div>
+    </div>
+    <label class="casilla"><input type="checkbox" id="respaldo-ia" ${ia.respaldo !== false ? "checked" : ""}>
+      <span>Si llega al límite, usar otro proveedor automáticamente</span></label>
+    <div id="estado-conexion" class="ayuda"></div>
+    <div class="barra"><button class="btn primario" type="button" id="guardar-ia">Guardar</button>
+      <button class="btn" type="button" id="cerrar-ia">Cerrar</button></div>`;
+  const dlg = $("#dialogo-ia");
+  const cargarModelos = async () => {
+    const prov = $("#prov-principal").value;
+    const sel = $("#modelo-ia");
+    if (!prov) return;
+    $("#estado-conexion").textContent = "Conectando…";
+    try {
+      const r = await api.get(`/api/ia/modelos?proveedor=${encodeURIComponent(prov)}`);
+      sel.innerHTML = r.modelos.map((m) => `<option ${m === ia.modelo ? "selected" : ""}>${esc(m)}</option>`).join("");
+      $("#estado-conexion").textContent = r.conectado ? `✓ ${prov} conectado` : `No se pudo conectar: ${r.error || "revisa la clave"}`;
+    } catch (e) {
+      $("#estado-conexion").textContent = e.message;
+    }
+  };
+  $("#prov-principal").onchange = cargarModelos;
+  $("#cerrar-ia").onclick = () => dlg.close();
+  $("#guardar-ia").onclick = async () => {
+    const claves = {};
+    $$("input[data-prov]", form).forEach((i) => { if (i.value.trim()) claves[i.dataset.prov] = i.value.trim(); });
+    try {
+      if (Object.keys(claves).length) await api.post("/api/ia/claves", claves);
+      await api.post("/api/ia/config", { proveedor: $("#prov-principal").value || null, modelo: $("#modelo-ia").value || null,
+        respaldo: $("#respaldo-ia").checked });
+      await recargarIA();
+      aviso("Configuración de IA guardada.");
+      dlg.close();
+      if (Object.keys(claves).length) navegar();
+    } catch (e) { aviso(e.message, "error"); }
+  };
+  dlg.showModal();
+  cargarModelos();
+}
+
+async function iniciar() {
+  pintarIconos();
+  $("#estado-ia").addEventListener("click", abrirDialogoIA);
+  document.addEventListener("abrir-ia", abrirDialogoIA);
+  $("#cerrar-app").addEventListener("click", async () => {
+    if (!confirm("¿Cerrar el planificador? Tendrás que abrirlo de nuevo para volver a usarlo.")) return;
+    try { await api.post("/api/apagar", {}); } catch { /* el servidor se cierra antes de responder */ }
+    document.body.innerHTML = '<main class="contenido"><h1>Planificador cerrado</h1><p>Ya puedes cerrar esta pestaña.</p></main>';
+  });
+  window.addEventListener("hashchange", navegar);
+  // Si en Barra se cambia de profesor, el planificador cambia con la barra (perfil, claves de IA, historial…)
+  const vigilarCuenta = async () => {
+    try {
+      const c = await api.get("/api/cuenta");
+      if (compartido.cuenta && c.clave !== compartido.cuenta.clave) {
+        aviso(`Cambió la cuenta de Barra: ahora es ${c.nombre || c.clave}. Se cargaron sus datos.`);
+        await Promise.all([recargarPerfil(), recargarIA()]);
+        await navegar();
+      }
+    } catch { /* sin conexión: se reintenta en el próximo aviso */ }
+  };
+  window.addEventListener("focus", vigilarCuenta);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) vigilarCuenta(); });
+  await Promise.all([recargarPerfil().catch(() => {}), recargarIA()]);
+  api.get("/api/version").then((v) => {
+    $("#version-app").textContent = `Planificador ${v.planificador || "?"}${v.barra ? ` · Barra ${v.barra}` : ""}`;
+    if (!v.compatible) aviso(v.mensaje, "error");
+  }).catch(() => {});
+  await navegar();
+}
+
+iniciar();

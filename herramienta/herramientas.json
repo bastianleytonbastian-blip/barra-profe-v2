@@ -1,0 +1,245 @@
+[
+  {
+    "grupo": "Webclass",
+    "nombre": "Asignar clases",
+    "icono": "📌",
+    "tipo": "webclass",
+    "destino": "asignar --hoy --dias-atras 7",
+    "ayuda": "Asigna las clases de hoy y recupera las de los últimos 7 días",
+    "vista_previa": "simular"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Asignar lo pendiente",
+    "icono": "📅",
+    "tipo": "periodos",
+    "selector": "meses",
+    "destino": "asignar --meses {valor}",
+    "vista_previa": "simular",
+    "ayuda": "Asigna las clases pendientes de los meses que marques",
+    "confirmar": "Esto asigna a las alumnas las clases pendientes de los meses que elegiste, y escribe en Webclass. Puede tardar varios minutos.\n\n¿Seguir?"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "A donde asigno cada unidad",
+    "icono": "🎯",
+    "tipo": "destinos",
+    "destino": "",
+    "ayuda": "Cambia el destino solo de las unidades que elijas, sin pasar por todas"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Registrar libro",
+    "icono": "📕",
+    "tipo": "webclass",
+    "destino": "libro",
+    "ayuda": "Declara OA, leccionario y replica la asistencia del día",
+    "vista_previa": "libro"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Registrar libro pendiente",
+    "icono": "⏪",
+    "tipo": "libro-atras",
+    "destino": "",
+    "ayuda": "Completa lo que quedó sin registrar en días anteriores; tú eliges qué"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Registrar observación",
+    "icono": "📝",
+    "tipo": "observacion",
+    "destino": "",
+    "ayuda": "Anota una observación (positiva, negativa o neutra) a las alumnas que elijas, con vista previa"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Planificar",
+    "icono": "🗓️",
+    "tipo": "planificar",
+    "destino": "%BARRA%\\planificador\\lanzar_planificador.pyw",
+    "ayuda": "Abre el asistente de IA: redacta la clase y la envía a Webclass con su recurso, OA y DUA"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Planificar en bloque",
+    "icono": "📋",
+    "tipo": "planificar",
+    "destino": "",
+    "ayuda": "Crea clases vacías según tu horario, importa una planilla o marca OA y DUA en lote"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Enviar al equipo PIE",
+    "icono": "✉️",
+    "tipo": "correo",
+    "destino": "",
+    "ayuda": "Envía guías por correo al equipo PIE, con vista previa antes de enviar"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Diagnóstico del libro",
+    "icono": "🔎",
+    "tipo": "periodos",
+    "selector": "periodos",
+    "destino": "libro --diagnostico --fechas {valor}",
+    "ayuda": "Informe de solo lectura de por qué los bloques de esos días se podrían o no registrar"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Informe del mes",
+    "icono": "📋",
+    "tipo": "webclass",
+    "destino": "libro --informe",
+    "ayuda": "Qué bloques del mes están completos y cuáles no"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Completar mes atrasado",
+    "icono": "📚",
+    "tipo": "preguntar",
+    "destino": "libro --completar-mes --mes {valor}",
+    "ayuda": "Pone al dia el libro de un mes completo",
+    "pregunta": "Recorre los dias habiles de ese mes que ya pasaron y declara OA, leccionario y asistencia donde falte. Tarda varios minutos y escribe en Webclass.",
+    "opciones": [
+      {
+        "texto": "Octubre (este mes)",
+        "valor": "10/2026"
+      },
+      {
+        "texto": "Septiembre",
+        "valor": "09/2026"
+      },
+      {
+        "texto": "Agosto",
+        "valor": "08/2026"
+      },
+      {
+        "texto": "Julio",
+        "valor": "07/2026"
+      },
+      {
+        "texto": "Junio",
+        "valor": "06/2026"
+      },
+      {
+        "texto": "Mayo",
+        "valor": "05/2026"
+      }
+    ],
+    "interactivo": false
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Mi horario",
+    "icono": "🗓️",
+    "tipo": "horario",
+    "destino": "",
+    "ayuda": "Tu horario de la semana: cursos con hora de entrada y salida"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Subir recursos",
+    "icono": "⬆️",
+    "tipo": "webclass",
+    "destino": "subir",
+    "ayuda": "Sube al banco lo que dejaste en la carpeta Subir a Webclass",
+    "vista_previa": "subir"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Abrir y firmar",
+    "icono": "✍️",
+    "tipo": "url",
+    "destino": "https://proyecto.webescuela.cl/sistema/webclass/home/portada_profesor.php",
+    "ayuda": "Calendario del libro de clases: la firma la haces tú"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Escala de notas",
+    "icono": "🧮",
+    "tipo": "url",
+    "destino": "https://clasesbastian.netlify.app/calculadora-notas",
+    "ayuda": "Abre la calculadora de notas (escala de exigencia)"
+  },
+  {
+    "grupo": "Correo y nube",
+    "nombre": "Correo del colegio",
+    "icono": "✉️",
+    "tipo": "url",
+    "destino": "https://mail.google.com/mail/",
+    "ayuda": "Bandeja de entrada del correo"
+  },
+  {
+    "grupo": "Correo y nube",
+    "nombre": "Google Drive",
+    "icono": "☁️",
+    "tipo": "url",
+    "destino": "https://drive.google.com/drive/home",
+    "ayuda": "Tus archivos en la nube"
+  },
+  {
+    "grupo": "Carpetas",
+    "nombre": "Subir a Webclass",
+    "icono": "📂",
+    "tipo": "carpeta",
+    "destino": "%BUZON%",
+    "ayuda": "Arrastra aquí los archivos, en la carpeta de su nivel"
+  },
+  {
+    "grupo": "Carpetas",
+    "nombre": "Carpeta de la barra",
+    "icono": "🛠️",
+    "tipo": "carpeta",
+    "destino": "%BARRA%",
+    "ayuda": "Aquí viven la barra, el perfil y los registros"
+  },
+  {
+    "grupo": "Registros",
+    "nombre": "Registro del libro",
+    "icono": "📑",
+    "tipo": "programa",
+    "destino": "%REGISTRO_LIBRO%",
+    "ayuda": "Qué se declaró y qué quedó pendiente, día por día"
+  },
+  {
+    "grupo": "Registros",
+    "nombre": "Registro de subidas",
+    "icono": "📥",
+    "tipo": "programa",
+    "destino": "%BUZON%\\registro_subidas.csv",
+    "ayuda": "Archivos subidos al banco y su id de recurso"
+  },
+  {
+    "grupo": "Registros",
+    "nombre": "Registro de tareas",
+    "icono": "🗒️",
+    "tipo": "programa",
+    "destino": "%REGISTRO_TAREAS%",
+    "ayuda": "Clases asignadas a las alumnas, con fecha y cantidad"
+  },
+  {
+    "grupo": "La barra",
+    "nombre": "Cambiar de profesor",
+    "icono": "👤",
+    "tipo": "perfil",
+    "destino": "",
+    "ayuda": "Cambia al perfil de otro docente registrado en este equipo"
+  },
+  {
+    "grupo": "La barra",
+    "nombre": "Cambiar color",
+    "icono": "🎨",
+    "tipo": "color",
+    "destino": "",
+    "ayuda": "Pasa a la siguiente paleta de colores"
+  },
+  {
+    "grupo": "La barra",
+    "nombre": "Sonido de inicio",
+    "icono": "🎵",
+    "tipo": "carpeta",
+    "destino": "%PERSONAL%",
+    "ayuda": "Deja aqui un archivo llamado inicio.mp3 (o inicio.wav); borralo para silenciarla"
+  }
+]

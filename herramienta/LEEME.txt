@@ -1,0 +1,137 @@
+HERRAMIENTAS DE WEBCLASS + BARRA FLOTANTE
+=========================================
+
+Esta version NO trae ningun programa .exe, a proposito: Windows 11 tiene una
+proteccion nueva (Control inteligente de aplicaciones) que borra sin avisar
+cualquier .exe que no venga firmado por una empresa conocida. Aqui todo son
+archivos de texto que ejecuta Python, y Python si esta firmado y reconocido,
+asi que Windows no bloquea nada.
+
+
+INSTALACION (una sola vez)
+--------------------------
+1. Descomprime esta carpeta donde quieras tenerla; por ejemplo en Documentos.
+
+2. Doble clic en   INSTALAR.bat
+
+   · Si el equipo no tiene Python, lo instala solo (tarda unos minutos y
+     Windows puede pedirte permiso: acepta).
+   · Despues te va a preguntar:
+       - tu RUT con guion y digito verificador,
+       - tu contrasena de Webclass,
+       - tu nombre tal como aparece en Webclass,
+       - de que curso eres profesor jefe (Enter si de ninguno).
+
+   La contrasena queda guardada en el Administrador de credenciales de
+   Windows. No queda escrita en ningun archivo y nadie mas la ve.
+
+3. Al terminar, el instalador deja:
+     · la carpeta  Documentos\Subir a Webclass  con una subcarpeta por nivel
+       (1 basico a 4 medio): lo que dejes ahi se sube solo al banco de
+       recursos cada 10 minutos,
+     · los accesos directos en el escritorio,
+     · una tarea que a las 16:00 asigna las clases del dia,
+     · la barra flotante al iniciar Windows.
+
+
+USO DIARIO
+----------
+La barra queda plegada en el borde derecho de la pantalla. Un clic en la
+pestana la abre. Desde ahi:
+
+  Asignar clases    asigna a las alumnas las clases de hoy (y las atrasadas)
+  Registrar libro   declara OA, leccionario y replica la asistencia del dia
+  Informe del mes   que bloques estan completos y cuales no
+  Mi horario        tu semana, curso por curso, con hora de entrada y salida
+  Subir recursos    sube ahora lo que haya en la carpeta, sin esperar
+  Abrir y firmar    abre el libro de clases en el navegador
+
+LA FIRMA LA HACES TU, SIEMPRE. Ninguna de estas herramientas firma por ti.
+
+
+ACTUALIZAR EN LINEA (la forma mas facil)
+----------------------------------------
+Al abrirse, la barra consulta en GitHub si hay una version nueva. Si la hay,
+aparece abajo "Hay una version nueva: X.Y.Z". Haz clic, lee que cambio y
+acepta: descarga el paquete, comprueba que llego completo, guarda una copia
+del codigo actual en  respaldo_actualizacion\  y lo instala. No toca tu perfil,
+tus datos ni tus botones. Despues cierra la barra y abrela de nuevo.
+Si no hay internet, la barra funciona igual y no avisa nada.
+
+Quien publica las versiones:  python herramienta\publicar.py --subir
+(sube el release a GitHub con las notas de CAMBIOS.md).
+
+
+ACTUALIZAR A UNA VERSION NUEVA
+------------------------------
+Cuando te pasen una version nueva (por pendrive o por correo):
+
+  1. Descomprimela ENCIMA de la carpeta que ya tienes, aceptando reemplazar.
+     Solo se reemplaza la carpeta  herramienta\ , que es el programa.
+
+  2. Doble clic en   herramienta\ACTUALIZAR.bat
+
+     No pregunta nada. Deja el codigo al dia, quita los archivos que
+     sobraron de la version anterior y revisa los complementos.
+
+  3. Cierra la barra con la X de arriba (Escape solo la esconde) y vuelve a
+     abrirla para que tome los cambios.
+
+NO se tocan, nunca:
+     personal\     tu perfil, tus botones, tu color
+     datos\        tus registros, tus pendientes, el estado de la barra
+
+Usa INSTALAR.bat solo la primera vez, en un PC nuevo.
+
+
+PLANIFICADOR CON IA
+-------------------
+Viaja dentro de esta misma carpeta (herramienta\planificador). El boton "Planificar"
+de la barra lo abre en el navegador. Redacta la clase con IA y la envia a Webclass
+con su recurso, sus OA y sus pautas DUA.
+
+  · Usa SIEMPRE la cuenta que esta activa en la barra. Si cambias de profesor en la
+    barra ("Cambiar de profesor"), el planificador cambia con ella: cada cuenta tiene
+    su propio perfil, sus claves de IA, su historial y sus archivos.
+  · No guarda ninguna contrasena de Webclass: usa la de la barra (Administrador de
+    credenciales de Windows). Si la cuenta activa cambia mientras trabajas, no escribe
+    nada y avisa.
+  · INSTALAR.bat y ACTUALIZAR.bat instalan sus complementos (fastapi, openai, etc.).
+  · Lo personal queda en  personal\planificador\<cuenta>  y lo generado en
+    datos\planificador\<cuenta>  (no se reparten, igual que el resto).
+  · La primera vez, cada docente abre "Mi perfil" en el planificador y agrega su clave
+    de IA gratuita (por ejemplo, de Google AI Studio).
+  · Seguridad: el planificador solo atiende a la propia pantalla abierta desde la barra; una
+    pagina web cualquiera no puede crear clases ni cambiar tus claves.
+  · "Creadas en WebClass": lista de lo que el planificador creo (datos\registro_planificaciones*.csv)
+    con "Eliminar", que borra SOLO clases que el propio planificador creo y nunca una que ya
+    tenga tarea asignada.
+  · Pruebas: python -B -m unittest discover -s tests   (incluye las del planificador).
+
+
+VERSIONES
+---------
+Barra y el planificador tienen cada uno su numero de version (archivo VERSION):
+    herramienta\\VERSION                 Barra Profe     (se ve en el pie de la barra, "v2.1.0")
+    herramienta\\planificador\\VERSION   Planificador    (se ve abajo a la izquierda del planificador)
+Formato MAYOR.MENOR.PARCHE. INSTALAR.bat y ACTUALIZAR.bat muestran ambos. Si el planificador
+necesita una Barra mas nueva, avisa y no escribe nada en Webclass: usa ACTUALIZAR.bat.
+Cada cambio que se reparta sube el numero y agrega una linea a CAMBIOS.md (en cada carpeta).
+
+
+SI CAMBIAN TUS CURSOS O UNIDADES
+--------------------------------
+Abre una ventana de comandos en esta carpeta y escribe:
+
+    python configurar.py --perfil <tu perfil> --solo-actualizar
+
+
+SI ALGO NO FUNCIONA
+-------------------
+  · "usuario incorrecto": revisa el RUT (con guion y digito verificador).
+  · INSTALAR.bat no encuentra Python: instalalo a mano desde
+    https://www.python.org/downloads/ marcando "Add python.exe to PATH",
+    y vuelve a abrir INSTALAR.bat.
+  · La barra no muestra el libro: tiene que estar en la misma carpeta que
+    los demas archivos.
+  · Lo que va pasando queda anotado en barra_profe.log y ejecucion_log.txt.

@@ -1,0 +1,22 @@
+# Datos personales y registros: nunca se versionan.
+# personal\ lleva RUT, cursos y unidades; datos\ lleva apellidos y asistencia.
+personal/
+datos/
+
+__pycache__/
+*.pyc
+*.tmp
+*.corrupto
+*.log
+
+# El respaldo de la v2 anterior es solo local.
+respaldo_v2_anterior/
+
+# Contraseñas: van al Administrador de credenciales de Windows.
+*.key
+*.pem
+
+# Código que el docente no comparte: registro propio, copias de seguridad de actualizaciones y paquetes por publicar.
+herramienta/registro_asignaciones.csv
+respaldo_actualizacion/
+publicaciones/
