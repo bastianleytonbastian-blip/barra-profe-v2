@@ -17,9 +17,11 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -50,6 +52,15 @@ def es_mas_nueva(actual: str, otra: str) -> bool:
     return bool(a and b and b > a)
 
 
+AYUDA_CERTIFICADO = ("Este PC no confía en el certificado de GitHub (¿antivirus o filtro de internet que revisa las conexiones seguras?). "
+                      "Ejecuta  python -m pip install --upgrade certifi  o pídele a quien administra la red que permita github.com.")
+
+
+def _es_error_de_certificado(exc: BaseException) -> bool:
+    motivo = getattr(exc, "reason", exc)
+    return isinstance(motivo, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(motivo)
+
+
 def _url_segura(url: str) -> bool:
     return isinstance(url, str) and url.startswith(HOSTS_PERMITIDOS)
 
@@ -58,7 +69,26 @@ def _abrir(url: str, abrir=None, timeout: int = 8):
     if not _url_segura(url):
         raise ErrorActualizacion("La dirección de descarga no es de GitHub; no se usa.")
     pedido = urllib.request.Request(url, headers={"User-Agent": "BarraProfe-actualizador"})
-    return (abrir or urllib.request.urlopen)(pedido, timeout=timeout)
+    if abrir is not None:
+        return abrir(pedido, timeout=timeout)
+    try:
+        return urllib.request.urlopen(pedido, timeout=timeout)
+    except urllib.error.URLError as exc:
+        if not _es_error_de_certificado(exc):
+            raise
+    # Algunos PC (Python sin la cadena de certificados al día) no confían en GitHub aunque haya internet:
+    # se reintenta con los certificados de `certifi` (los mismos que usa `requests`). Nunca se desactiva la verificación.
+    try:
+        import certifi
+        contexto = ssl.create_default_context(cafile=certifi.where())
+    except (ImportError, OSError):
+        raise ErrorActualizacion(AYUDA_CERTIFICADO)
+    try:
+        return urllib.request.urlopen(pedido, timeout=timeout, context=contexto)
+    except urllib.error.URLError as exc:
+        if _es_error_de_certificado(exc):
+            raise ErrorActualizacion(AYUDA_CERTIFICADO) from exc
+        raise
 
 
 def interpretar_manifiesto(datos: dict, repo: str = REPO) -> dict | None:

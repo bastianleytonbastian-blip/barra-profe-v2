@@ -72,6 +72,45 @@ class Versiones(unittest.TestCase):
         self.assertTrue(act._url_segura("https://github.com/x/y/releases/download/v1/a.zip"))
 
 
+class Certificados(unittest.TestCase):
+    def _error_cert(self):
+        import ssl
+        import urllib.error
+        return urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed: unable to get local issuer certificate"))
+
+    def test_si_el_pc_no_confia_en_github_se_reintenta_con_certifi(self):
+        from unittest import mock
+        llamadas = []
+        def falso(pedido, timeout=0, context=None):
+            llamadas.append(context)
+            if context is None:
+                raise self._error_cert()
+            return Respuesta(json.dumps(manifiesto("2.3.0")).encode())
+        with mock.patch.object(act.urllib.request, "urlopen", falso):
+            info, hubo_red = act.consultar("2.2.0")
+        self.assertEqual((info["version"], hubo_red), ("2.3.0", True))
+        self.assertIsNone(llamadas[0])
+        self.assertIsNotNone(llamadas[1], "el segundo intento usa los certificados de certifi")
+
+    def test_si_tampoco_con_certifi_explica_que_hacer_y_no_desactiva_la_verificacion(self):
+        from unittest import mock
+        def falso(pedido, timeout=0, context=None):
+            raise self._error_cert()
+        with mock.patch.object(act.urllib.request, "urlopen", falso):
+            self.assertEqual(act.consultar("2.2.0"), (None, False))
+        self.assertIn("certificado", act.ULTIMO_ERROR)
+
+    def test_otros_errores_no_se_reintentan(self):
+        from unittest import mock
+        llamadas = []
+        def falso(pedido, timeout=0, context=None):
+            llamadas.append(1)
+            raise OSError("sin red")
+        with mock.patch.object(act.urllib.request, "urlopen", falso):
+            act.consultar("2.2.0")
+        self.assertEqual(len(llamadas), 1)
+
+
 class Paquete(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="act_prueba_")
