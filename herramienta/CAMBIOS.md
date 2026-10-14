@@ -3,6 +3,9 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: función nueva · PARCHE: arreglo).
 
+## 2.5.4
+- Versión de prueba de las actualizaciones en línea: no cambia nada del funcionamiento.
+
 ## 2.5.3
 - Arreglo: en PC cuyo Python no confía en el certificado de GitHub («unable to get local issuer certificate») la búsqueda de actualizaciones
   fallaba aunque hubiera internet. Ahora reintenta con los certificados de `certifi` (la verificación nunca se desactiva) y, si tampoco así, explica qué hacer.
