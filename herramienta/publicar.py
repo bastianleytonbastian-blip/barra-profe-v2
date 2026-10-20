@@ -64,6 +64,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--subir", action="store_true", help="crear el release en GitHub")
     args = ap.parse_args()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")    # la consola de Windows no sabe escribir emojis (📣) de las notas
     from barra_utiles import leer_version
     version = leer_version(AQUI)
     if not version:
