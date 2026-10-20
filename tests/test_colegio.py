@@ -27,12 +27,49 @@ class ClaveDelColegio(unittest.TestCase):
         codigo = c.generar_codigo()
         self.assertRegex(codigo, r"^[A-HJ-NP-Z2-9]{4}(-[A-HJ-NP-Z2-9]{4}){4}$")
         self.assertNotEqual(codigo, c.generar_codigo())
-        self.assertEqual(c.normalizar_codigo(codigo.lower().replace("-", " ")), codigo.replace("-", ""))
-        self.assertEqual(c.formatear_codigo(CODIGO), "ABCD-EFGH-JKLM-NPQR-STUV")
-        for malo in ("", None, "ABC", CODIGO[:-1] + "0", CODIGO + "W"):      # 0 no está entre las letras
+        self.assertTrue(c.es_generada(codigo))
+        self.assertEqual(c.normalizar_codigo(codigo.lower().replace("-", " ")), c.normalizar_codigo(codigo))
+        self.assertEqual(c.formatear_codigo(CODIGO.lower()), "ABCD-EFGH-JKLM-NPQR-STUV")
+        for malo in ("", None, "ABC", "corta-de-15-let"):
             self.assertEqual(c.normalizar_codigo(malo), "", malo)
 
-    def test_queda_en_el_llavero_de_windows(self):
+    def test_una_frase_propia_vale_igual_se_escriba_como_se_escriba(self):
+        frase = "Tiza lunes, guitarra VOLCÁN"
+        self.assertFalse(c.es_generada(frase))
+        self.assertEqual(c.normalizar_codigo(frase), "tizalunesguitarravolcan")
+        self.assertEqual(c.normalizar_codigo("tiza-lunes guitarra volcan"), c.normalizar_codigo(frase))
+        self.assertEqual(c.formatear_codigo("  Tiza  lunes guitarra   volcán "), "Tiza lunes guitarra volcán")
+        paquete = c.cerrar(frase, {"claves": {"GROQ_API_KEY": "g"}})
+        self.assertEqual(c.abrir(paquete, "tiza LUNES guitarra volcan")["claves"], {"GROQ_API_KEY": "g"})
+        self.assertIsNone(c.abrir(paquete, "tiza lunes guitarra volcanes"))
+
+    def test_una_frase_nueva_debe_ser_dificil_de_adivinar(self):
+        self.assertIn("al menos 4 palabras", c.problema_de_frase("tiza lunes"))
+        self.assertIn("No repitas", c.problema_de_frase("tiza tiza lunes lunes"))
+        self.assertIn("más largas", c.problema_de_frase("sol mar luz paz"))
+        self.assertEqual(c.problema_de_frase("tiza lunes guitarra volcán"), "")
+        self.assertEqual(c.problema_de_frase(c.generar_codigo()), "", "la generada al azar siempre sirve")
+
+    def test_lo_publicado_con_la_clave_de_la_2_11_0_se_sigue_abriendo(self):
+        import base64
+        import hashlib
+        from cryptography.fernet import Fernet
+        sal = b"s" * 16                                 # así cifraba la 2.11.0: la clave en mayúsculas, sin guiones
+        llave = base64.urlsafe_b64encode(hashlib.pbkdf2_hmac("sha256", CODIGO.encode(), sal, c.ITERACIONES, 32))
+        viejo = {"formato": 1, "sal": base64.b64encode(sal).decode(),
+                 "datos": Fernet(llave).encrypt(json.dumps({"claves": {"GEMINI_API_KEY": "k"}}).encode()).decode()}
+        self.assertEqual(c.abrir(viejo, "abcd-efgh-jklm-npqr-stuv")["claves"], {"GEMINI_API_KEY": "k"})
+        nuevo = c.cerrar("abcd efgh jklm npqr stuv", {"claves": {"GEMINI_API_KEY": "k"}}, sal)
+        abierto = json.loads(Fernet(llave).decrypt(nuevo["datos"].encode()))   # una barra 2.11.0 abre lo nuevo
+        self.assertEqual(abierto["claves"], {"GEMINI_API_KEY": "k"})
+
+    def test_la_sal_se_puede_mantener(self):
+        primero = c.cerrar(CODIGO, {})
+        segundo = c.cerrar(CODIGO, {}, c.sal_de(primero))
+        self.assertEqual(primero["sal"], segundo["sal"])
+        self.assertIsNone(c.sal_de({"formato": 1}))
+
+    def test_queda_en_el_llavero_de_windows_tal_como_se_escribio(self):
         llavero = {}
         with mock.patch("keyring.set_password", lambda s, u, v: llavero.__setitem__((s, u), v)), \
                 mock.patch("keyring.get_password", lambda s, u: llavero.get((s, u))):
@@ -40,8 +77,13 @@ class ClaveDelColegio(unittest.TestCase):
                 c.guardar_codigo("corta")
             self.assertEqual(llavero, {})
             c.guardar_codigo("abcd-efgh-jklm-npqr-stuv")
-            self.assertEqual(llavero, {(c.SERVICIO, c.USUARIO): CODIGO})
-            self.assertEqual(c.codigo_guardado(vigencia=0), CODIGO)
+            self.assertEqual(llavero, {(c.SERVICIO, c.USUARIO): "ABCD-EFGH-JKLM-NPQR-STUV"})
+            self.assertEqual(c.codigo_guardado(vigencia=0), CODIGO.lower())
+            c.guardar_codigo("Tiza  lunes guitarra volcán")
+            self.assertEqual(c.codigo_escrito(vigencia=0), "Tiza lunes guitarra volcán")
+            self.assertEqual(c.codigo_guardado(vigencia=0), "tizalunesguitarravolcan")
+            llavero[(c.SERVICIO, c.USUARIO)] = CODIGO                 # como lo dejó guardado la 2.11.0
+            self.assertEqual(c.codigo_guardado(vigencia=0), CODIGO.lower())
 
     def test_sin_llavero_es_como_no_tener_clave(self):
         with mock.patch("keyring.get_password", side_effect=RuntimeError("sin llavero")):

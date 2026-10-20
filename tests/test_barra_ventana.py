@@ -73,6 +73,7 @@ class VentanaBarra(unittest.TestCase):
             return self.codigo_colegio
         for nombre, falso in (("descargar", sin_red), ("es_administrador", lambda *a, **k: False),
                               ("codigo_guardado", lambda vigencia=30: self.codigo_colegio),
+                              ("_leer_llavero", lambda vigencia=30: self.codigo_colegio),     # ni leer el de verdad
                               ("guardar_codigo", guardar_codigo),
                               ("publicar", lambda paquete, carpeta, **k: self.publicados.append(paquete))):
             parche = mock.patch.object(self.mod["colegio"], nombre, falso)
@@ -2048,7 +2049,7 @@ class VentanaBarra(unittest.TestCase):
         self.assertIn("todavía no tiene la clave del colegio", v.aviso.cget("text"))
         v.texto.set("abc")
         v._guardar()
-        self.assertIn("20 letras y números", v.aviso.cget("text"))
+        self.assertIn("Escribe la clave completa", v.aviso.cget("text"))
         v.texto.set("ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ")
         v._guardar()
         self._esperar(lambda: "no abre" in v.aviso.cget("text"))
@@ -2056,51 +2057,29 @@ class VentanaBarra(unittest.TestCase):
         v.texto.set("abcd efgh jklm npqr stuv")
         v._guardar()
         self._esperar(lambda: "Guardada" in v.aviso.cget("text"))
-        self.assertEqual(self.codigo_colegio, self.CODIGO)
+        self.assertEqual(self.codigo_colegio, self.mod["colegio"].normalizar_codigo(self.CODIGO))
         v.destroy()
 
-    def test_el_administrador_publica_mensajes_y_claves_cifrados(self):
-        import datetime
-        col, b = self.mod["colegio"], self.barra
-        self.assertNotIn("Administrador", self._ajustes().pestanas.pestanas, "solo en el PC que puede publicar")
-        for w in b.winfo_children():
-            if isinstance(w, self.mod["VentanaAjustes"]):
-                w.destroy()
-        b.es_admin = True
-        ajustes = self._ajustes("Administrador")
-        self.assertIn("Crear la clave del colegio", self._textos(ajustes))
-        self.codigo_colegio = self.CODIGO
-        ajustes.pestanas.elegir("Administrador")
-        self.assertIn("ABCD-EFGH-JKLM-NPQR-STUV", self._textos(ajustes))
-        ajustes.destroy()
-
-        v = self.mod["VentanaAdministrador"](b, "Mensajes")
-        self._esperar(lambda: "Trayendo" not in v.aviso.cget("text"))
-        v.campo_texto.insert("1.0", "Recuerden firmar el libro")
-        v._publicar_mensaje()
-        self._esperar(lambda: self.publicados)
-        self._esperar(lambda: "publicado para todos" in v.aviso.cget("text"))
-        contenido = col.abrir(self.publicados[-1], self.CODIGO)
-        self.assertEqual([(m["tipo"], m["para"], m["texto"]) for m in contenido["mensajes"]],
-                         [("mensaje", "*", "Recuerden firmar el libro")])
-        self.assertEqual(col.leer_paquete(self.mod["BUZON_COLEGIO"]), self.publicados[-1], "este PC lo ve al tiro")
-        self.assertIn("PUBLICADOS · 1", self._textos(v))
-
-        v._elegir_tipo("aviso")
-        v.fecha.set((datetime.date.today() - datetime.timedelta(days=1)).strftime("%d/%m/%Y"))
-        v.campo_texto.insert("1.0", "Atrasado")
-        v._publicar_mensaje()
-        self.assertIn("ya pasó", v.aviso.cget("text"))
-
-        v.pestanas.elegir("Claves de IA")
-        v.campos_claves["GEMINI_API_KEY"].insert(0, "AIza-clave-del-colegio-9876")
-        v._publicar_claves()
-        self._esperar(lambda: "claves de IA del colegio quedaron publicadas" in v.aviso.cget("text"))
-        self.assertEqual(col.abrir(self.publicados[-1], self.CODIGO)["claves"],
-                         {"GEMINI_API_KEY": "AIza-clave-del-colegio-9876"})
-        self.assertIn("publicada …9876", self._textos(v))
-        self.assertNotIn("AIza-clave-del-colegio", json.dumps(self.publicados[-1]), "viaja cifrada")
+    def test_la_clave_del_colegio_puede_ser_una_frase(self):
+        col = self.mod["colegio"]
+        col.guardar_paquete(self.mod["BUZON_COLEGIO"], col.cerrar("Tiza lunes guitarra volcán", {"mensajes": []}))
+        v = self.mod["VentanaClaveColegio"](self.barra)
+        v.texto.set("tiza LUNES guitarra volcan")              # sin tildes ni mayúsculas: vale igual
+        v._guardar()
+        self._esperar(lambda: "Guardada" in v.aviso.cget("text"))
+        self.assertEqual(self.codigo_colegio, "tizalunesguitarravolcan")
         v.destroy()
+
+    def test_la_barra_no_trae_nada_de_administrador(self):
+        """Publicar es de la mini app «Administrador del colegio», que no viaja con la barra: ni aunque este PC pueda."""
+        with mock.patch.object(self.mod["colegio"], "es_administrador", lambda *a, **k: True):
+            ajustes = self._ajustes()
+            self.assertNotIn("Administrador", ajustes.pestanas.pestanas)
+            ajustes.destroy()
+        for nombre in ("VentanaAdministrador", "_revisar_admin"):
+            self.assertNotIn(nombre, self.mod)
+            self.assertFalse(hasattr(self.barra, nombre))
+        self.assertEqual(self.mod["MS_VIGILAR_COLEGIO"], 3 * 60 * 1000, "el buzón se revisa cada 3 minutos")
 
     # ------------------------------------------------------------ días sin clases
     def _estado_con_pendientes(self):

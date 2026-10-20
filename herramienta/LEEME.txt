@@ -83,16 +83,19 @@ clases" (tambien en Ajustes > Profesor). Se guarda por profesor.
 
 AVISOS Y CLAVES DEL COLEGIO: quien administra la barra puede mandar mensajes
 (a todos o a algunos profes) y avisos del dia, y repartir las claves de IA del
-planificador. Llegan solos, arriba de HOY. Lo que va para todos se ve sin
+planificador. Llegan solos en unos minutos, arriba de HOY. Lo que va para todos se ve sin
 configurar nada. Para los mensajes dirigidos a ti y las claves de IA, cada PC
-necesita UNA VEZ la "clave del colegio" (te la entrega el administrador):
+necesita UNA VEZ la "clave del colegio" (te la entrega el administrador; puede
+ser una frase de varias palabras, da igual mayusculas, tildes o espacios):
 Ajustes > Profesor > "Clave del colegio". En el planificador puedes agregar una
 clave de IA tuya como extra: se usa primero y, si se agota, sigue la del colegio.
 
-Administrador: en su PC (con GitHub CLI y permiso en el repositorio) aparece
-Ajustes > Administrador para crear la clave del colegio, publicar mensajes y
-avisos y cargar las claves de IA. Viaja por GitHub: lo que va para todos, sin
-cifrar (no pongas nada privado); lo dirigido y las claves, cifrado.
+Administrador: usa la mini aplicacion "Administrador del colegio"
+(administrador\administrador_colegio.pyw, fuera de herramienta\: no viaja con
+la barra). Necesita GitHub CLI con sesion y permiso en el repositorio. Ahi
+crea la clave del colegio, publica mensajes y avisos y carga las claves de IA.
+Viaja por GitHub: lo que va para todos, sin cifrar (no pongas nada privado);
+lo dirigido y las claves, cifrado.
 
 LA FIRMA LA HACES TU, SIEMPRE. Ninguna de estas herramientas firma por ti.
 

@@ -20,3 +20,6 @@ respaldo_v2_anterior/
 herramienta/registro_asignaciones.csv
 respaldo_actualizacion/
 publicaciones/
+
+# La mini app del administrador vive solo en su PC: no se versiona ni se reparte.
+administrador/

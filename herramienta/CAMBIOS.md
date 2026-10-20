@@ -3,6 +3,15 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: función nueva · PARCHE: arreglo).
 
+## 2.11.1
+- Los avisos del colegio llegan más rápido: la barra revisa el buzón cada 3 minutos (antes, cada 20).
+- Publicar ya no está en la barra (se quita ⚙ Ajustes → Administrador). El administrador usa una mini aplicación aparte,
+  «Administrador del colegio» (carpeta `administrador\`), que no viaja con las actualizaciones.
+- La clave del colegio puede ser una frase de palabras elegidas por el administrador (al menos 4, por ejemplo «tiza
+  lunes guitarra volcán»): más fácil de dictar y escribir. Vale igual con o sin mayúsculas, tildes o espacios. La clave
+  generada de antes sigue sirviendo, también con las barras 2.11.0.
+- La barra abre el buzón en segundo plano: ya no se congela medio segundo cuando llega algo nuevo.
+
 ## 2.11.0
 - Buzón del colegio: el administrador publica desde su barra y llega a todos los profes en unos minutos (la barra lo
   consulta al abrirse y cada 20 minutos). Viaja por GitHub: lo que va para todos, sin cifrar (se ve sin configurar

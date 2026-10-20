@@ -229,10 +229,10 @@ PREFERENCIAS = rutas.dato(f"preferencias{_sufijo}.json")
 # las tareas, por eso la ruta sale de rutas.sin_clases().
 SIN_CLASES = rutas.sin_clases(PERFIL)
 # Lo que reparte el administrador (avisos y claves de IA del colegio): un archivo cifrado por equipo, que se trae de
-# GitHub cada 20 minutos. Qué avisos ya marcó leídos cada docente va aparte.
+# GitHub cada 3 minutos. Qué avisos ya marcó leídos cada docente va aparte.
 BUZON_COLEGIO = rutas.dato(colegio.ARCHIVO)
 AVISOS_LEIDOS = rutas.dato(f"avisos_leidos{_sufijo}.json")
-MS_VIGILAR_COLEGIO = 20 * 60 * 1000
+MS_VIGILAR_COLEGIO = 3 * 60 * 1000
 # Favoritos de quien todavía no eligió los suyos (clic derecho en un botón: «Agregar a favoritos»).
 FAVORITOS_INICIALES = ("Registrar libro", "Asignar clases", "Planificar", "Subir recursos", "Escala de notas")
 GRUPO_FAVORITOS = "★ Favoritos"
@@ -2048,10 +2048,11 @@ class VentanaClaveColegio(VentanaBase):
 
     def __init__(self, maestra):
         super().__init__(maestra, "Clave del colegio",
-                         "Te la entrega quien administra la barra en tu colegio. Los avisos para todos llegan sin ella; "
-                         "con ella llegan además los mensajes dirigidos a ti y las claves de IA del planificador. Queda "
-                         "en el Administrador de credenciales de Windows (no en un archivo) y sirve para todos los profes "
-                         "de este PC.", icono="🏫", titulo_ventana="Clave del colegio")
+                         "Te la entrega quien administra la barra en tu colegio: unas letras y números en grupos, o una "
+                         "frase de varias palabras (da igual mayúsculas, tildes o espacios). Los avisos para todos llegan "
+                         "sin ella; con ella llegan además los mensajes dirigidos a ti y las claves de IA del "
+                         "planificador. Queda en el Administrador de credenciales de Windows (no en un archivo) y sirve "
+                         "para todos los profes de este PC.", icono="🏫", titulo_ventana="Clave del colegio")
         self.texto = tk.StringVar()
         self.campo = estilo_campo(tk.Entry(self.cuerpo, textvariable=self.texto, font=letra(12), justify="center"))
         self.campo.pack(fill="x", ipady=4)
@@ -2071,10 +2072,10 @@ class VentanaClaveColegio(VentanaBase):
             pass
 
     def _guardar(self) -> None:
-        codigo = colegio.normalizar_codigo(self.texto.get())
+        escrito = self.texto.get()
+        codigo = colegio.normalizar_codigo(escrito)
         if not codigo:
-            self.aviso.configure(text=f"La clave del colegio son {colegio.LARGO} letras y números (como K7M2-9QXP-…). "
-                                      "Revísala.", fg=COLOR_ERROR)
+            self.aviso.configure(text="Escribe la clave completa, tal como te la dio el administrador.", fg=COLOR_ERROR)
             return
         self.aviso.configure(text="Revisando con lo que publicó el colegio…", fg=COLOR_TENUE)
 
@@ -2086,7 +2087,7 @@ class VentanaClaveColegio(VentanaBase):
             paquete = colegio.leer_paquete(BUZON_COLEGIO)
             if paquete is not None and colegio.abrir(paquete, codigo) is None:
                 return "no_abre"
-            colegio.guardar_codigo(codigo)
+            colegio.guardar_codigo(escrito)            # tal como se escribió: así se puede mostrar
             return "ok" if paquete is not None else "sin_buzon"
         self.en_segundo_plano(trabajo, self._guardado)
 
@@ -2108,224 +2109,6 @@ class VentanaClaveColegio(VentanaBase):
                              else "✓ Guardada. Cuando el colegio publique algo, llegará solo.", fg=COLOR_OK)
         self.limpiar_botones()
         self.boton("Cerrar", self.destroy, principal=True)
-
-
-class VentanaAdministrador(VentanaBase):
-    """Lo que el administrador publica para todos: mensajes, avisos del día y las claves de IA del colegio.
-
-    Antes de editar se trae lo último publicado (por si se publicó desde otro PC). Cada «Publicar» cifra todo con la
-    clave del colegio, lo sube al buzón de GitHub y lo deja también en este PC, para verlo al tiro.
-    """
-
-    ANCHO = 560
-
-    def __init__(self, maestra, pestana: str = "Mensajes"):
-        super().__init__(maestra, "Publicar para el colegio",
-                         "Llega en unos minutos a la barra de cada profe (lo dirigido y las claves, solo con la clave "
-                         "del colegio).",
-                         icono="📣", titulo_ventana="Publicar para el colegio")
-        self.codigo = colegio.codigo_guardado(vigencia=0)
-        self.contenido = colegio.contenido_guardado(BUZON_COLEGIO, self.codigo) or colegio.contenido_vacio()
-        self._publicando = False
-        self.tipo = "mensaje"
-        self.para = tk.StringVar(value="Todos")
-        self.fecha = tk.StringVar(value=datetime.date.today().strftime("%d/%m/%Y"))
-        self._borrador = ""
-        self.campos_claves: dict[str, tk.Entry] = {}
-        self.pestanas = Pestanas(self.cuerpo, [("Mensajes", self._mensajes), ("Claves de IA", self._claves)], pestana)
-        self.pestanas.pack(fill="both", expand=True)
-        self.aviso = tk.Label(self.cuerpo, text="Trayendo lo último publicado…", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                              font=letra(9), anchor="w", justify="left", wraplength=self.ancho_texto())
-        self.aviso.pack(fill="x", pady=(8, 0))
-        self.boton("Cerrar", self.destroy)
-        self.colocar()
-        self.en_segundo_plano(lambda: colegio.descargar(BUZON_COLEGIO), self._traido)
-
-    def _traido(self, _cambio, error) -> None:
-        paquete = colegio.leer_paquete(BUZON_COLEGIO)
-        abierto = colegio.abrir(paquete, self.codigo) if paquete is not None else None
-        if paquete is not None and abierto is None:
-            self.aviso.configure(text="Lo publicado no se abre con la clave de este PC: si publicas, se reemplaza y los "
-                                      "profes necesitarán esta clave.", fg=COLOR_ERROR)
-            return
-        if getattr(error, "code", None) == 404:
-            self.aviso.configure(text="Todavía no hay nada publicado: lo primero que publiques crea el buzón.")
-        elif error is not None:
-            self.aviso.configure(text="Sin conexión con GitHub: se muestra lo guardado en este PC.")
-        else:
-            self.aviso.configure(text="")
-        if abierto is not None and abierto != self.contenido:
-            self.contenido = abierto
-            self._guardar_borrador()
-            self.pestanas.elegir(self.pestanas.actual)
-
-    # ------------------------------------------------------------------ mensajes
-    def _mensajes(self, panel) -> None:
-        opciones_segmentadas(panel, "Qué publicas", [("mensaje", "Mensaje"), ("aviso", "Aviso del día")], self.tipo,
-                             self._elegir_tipo)
-        tk.Label(panel, text="Un mensaje se ve hasta que el profe lo marca «Listo»; un aviso del día, solo ese día.",
-                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w").pack(fill="x", pady=(4, 0))
-        fila = tk.Frame(panel, bg=COLOR_FONDO)
-        fila.pack(fill="x", pady=(10, 0))
-        tk.Label(fila, text="Para", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10), width=5, anchor="w").pack(side="left")
-        estilo_campo(tk.Entry(fila, textvariable=self.para, font=letra(10))).pack(side="left", fill="x", expand=True,
-                                                                                ipady=3)
-        tk.Label(panel, text="«Todos» viaja sin cifrar (como un aviso en la entrada del colegio). Para el RUT o el nombre "
-                             "de uno o varios profes (separados por coma) va cifrado.", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                 font=letra(9), anchor="w", justify="left", wraplength=self.ancho_texto() - int(48 * self.escala)).pack(
-            fill="x", padx=(int(48 * self.escala), 0))
-        if self.tipo == "aviso":
-            fila = tk.Frame(panel, bg=COLOR_FONDO)
-            fila.pack(fill="x", pady=(8, 0))
-            tk.Label(fila, text="Día", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10), width=5, anchor="w").pack(
-                side="left")
-            estilo_campo(tk.Entry(fila, textvariable=self.fecha, font=letra(10), width=12)).pack(side="left", ipady=3)
-        self.campo_texto = estilo_campo(tk.Text(panel, height=4, wrap="word", font=letra(10)))
-        self.campo_texto.pack(fill="x", pady=(10, 0))
-        self.campo_texto.insert("1.0", self._borrador)
-        boton_texto(panel, "Publicar", self._publicar_mensaje, principal=True).pack(anchor="e", pady=(8, 0))
-
-        mensajes = sorted(self.contenido["mensajes"], key=lambda m: m.get("creado", ""), reverse=True)
-        tk.Label(panel, text=f"PUBLICADOS · {len(mensajes)}", bg=COLOR_FONDO, fg=COLOR_ACENTO, font=letra(9, "bold"),
-                 anchor="w").pack(fill="x", pady=(12, 4))
-        lista = MarcoDesplazable(panel, alto_max=int(190 * self.escala))
-        lista.pack(fill="x")
-        if not mensajes:
-            tk.Label(lista.interior, text="Nada publicado todavía.", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(10),
-                     anchor="w").pack(fill="x")
-        for m in mensajes:
-            caja = tk.Frame(lista.interior, bg=COLOR_BOTON)
-            caja.pack(fill="x", pady=1)
-            para = "todos" if m["para"] == "*" else m["para"]
-            cuando = (f"aviso del {colegio._fecha(m['fecha']):%d/%m}" if m["tipo"] == "aviso"
-                      else f"mensaje · {m.get('creado', '')[8:10]}/{m.get('creado', '')[5:7]}")
-            quitar = tk.Label(caja, text="Quitar", bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9, "underline"),
-                              cursor="hand2")
-            quitar.pack(side="right", anchor="n", padx=8, pady=4)
-            quitar.bind("<Button-1>", lambda _e, i=m["id"]: self._quitar_mensaje(i))
-            reserva = "sin cifrar" if colegio.es_general(m) else "cifrado"
-            tk.Label(caja, text=f"{cuando} · para {para} · {reserva}", bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9),
-                     anchor="w").pack(fill="x", padx=8, pady=(4, 0))
-            tk.Label(caja, text=m["texto"], bg=COLOR_BOTON, fg=COLOR_TEXTO, font=letra(10), anchor="w", justify="left",
-                     wraplength=self.ancho_texto() - int(90 * self.escala)).pack(fill="x", padx=8, pady=(0, 4))
-        lista.activar_rueda()
-
-    def _guardar_borrador(self) -> None:
-        campo = getattr(self, "campo_texto", None)
-        try:
-            if campo is not None and campo.winfo_exists():
-                self._borrador = campo.get("1.0", "end").strip()
-        except tk.TclError:
-            pass
-
-    def _elegir_tipo(self, tipo: str) -> None:
-        self._guardar_borrador()
-        self.tipo = tipo
-        self.pestanas.elegir("Mensajes")
-
-    def _publicar_mensaje(self) -> None:
-        self._guardar_borrador()
-        para = self.para.get().strip()
-        para = "*" if para.lower() in ("", "todos", "todas", "*") else para
-        fecha = None
-        try:
-            if self.tipo == "aviso":
-                fecha = parsear_fecha(self.fecha.get())
-                if fecha < datetime.date.today():
-                    raise ValueError("Ese día ya pasó: elige hoy o un día que viene.")
-            mensaje = colegio.nuevo_mensaje(self.tipo, self._borrador, para, fecha, de=NOMBRE or "")
-        except ValueError as exc:
-            self.aviso.configure(text=str(exc), fg=COLOR_ERROR)
-            return
-        a_quien = "todos" if para == "*" else para
-
-        def listo() -> None:
-            self._borrador = ""
-        self._publicar({**self.contenido, "mensajes": self.contenido["mensajes"] + [mensaje]},
-                       f"Listo: publicado para {a_quien}. Llega a las barras en unos minutos.", listo)
-
-    def _quitar_mensaje(self, ident: str) -> None:
-        if not messagebox.askyesno("Barra Profe", "¿Quitar este mensaje? Deja de verse en todas las barras.", parent=self):
-            return
-        self._guardar_borrador()
-        self._publicar({**self.contenido, "mensajes": [m for m in self.contenido["mensajes"] if m["id"] != ident]},
-                       "Listo: se quitó. Desaparece de las barras en unos minutos.")
-
-    # ------------------------------------------------------------------ claves
-    def _claves(self, panel) -> None:
-        tk.Label(panel, text="El planificador de cada profe las usa sin poder verlas. Cada profe puede agregar una propia "
-                             "como extra: se usa primero y, si llega a su límite, sigue la del colegio.",
-                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w", justify="left",
-                 wraplength=self.ancho_texto()).pack(fill="x")
-        self.campos_claves = {}
-        for nombre, secreto, ayuda in colegio.PROVEEDORES_IA:
-            actual = self.contenido["claves"].get(secreto, "")
-            fila = tk.Frame(panel, bg=COLOR_FONDO)
-            fila.pack(fill="x", pady=(10, 2))
-            tk.Label(fila, text=nombre, bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10, "bold")).pack(side="left")
-            tk.Label(fila, text=f"publicada …{actual[-4:]}" if actual else "sin clave", bg=COLOR_FONDO,
-                     fg=COLOR_OK if actual else COLOR_TENUE, font=letra(9)).pack(side="left", padx=8)
-            if actual:
-                quitar = tk.Label(fila, text="Quitar", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9, "underline"),
-                                  cursor="hand2")
-                quitar.pack(side="right")
-                quitar.bind("<Button-1>", lambda _e, s=secreto, n=nombre: self._quitar_clave(s, n))
-            campo = estilo_campo(tk.Entry(panel, show="•", font=letra(10)))
-            campo.pack(fill="x", ipady=3)
-            tk.Label(panel, text=f"{'Para cambiarla, pega otra' if actual else 'Pega la clave'} · gratis en {ayuda}",
-                     bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w").pack(fill="x")
-            self.campos_claves[secreto] = campo
-        boton_texto(panel, "Guardar y publicar", self._publicar_claves, principal=True).pack(anchor="e", pady=(10, 0))
-
-    def _publicar_claves(self) -> None:
-        nuevas = {s: c.get().strip() for s, c in self.campos_claves.items() if c.get().strip()}
-        if not nuevas:
-            self.aviso.configure(text="Pega al menos una clave (las que dejes vacías quedan como están).", fg=COLOR_ERROR)
-            return
-        self._publicar({**self.contenido, "claves": {**self.contenido["claves"], **nuevas}},
-                       "Listo: las claves de IA del colegio quedaron publicadas.")
-
-    def _quitar_clave(self, secreto: str, nombre: str) -> None:
-        if not messagebox.askyesno("Barra Profe", f"¿Quitar la clave de {nombre} del colegio? Los profes que no tengan una "
-                                                  "propia dejarán de usar ese proveedor.", parent=self):
-            return
-        self._publicar({**self.contenido, "claves": {k: v for k, v in self.contenido["claves"].items() if k != secreto}},
-                       f"Listo: se quitó la clave de {nombre}.")
-
-    # ---------------------------------------------------------------- publicar
-    def _publicar(self, contenido: dict, texto_ok: str, al_publicar=None) -> None:
-        """Cifra todo con la clave del colegio, lo sube a GitHub y lo deja en este PC (en segundo plano)."""
-        if self._publicando:
-            return
-        self._publicando = True
-        hoy = datetime.date.today()
-        contenido = colegio.limpiar({**contenido, "mensajes": colegio.vigentes(colegio.limpiar(contenido)["mensajes"], hoy),
-                                     "publicado": f"{datetime.datetime.now():%Y-%m-%d %H:%M}"})
-        self.aviso.configure(text="Publicando en GitHub…", fg=COLOR_TENUE)
-        codigo = self.codigo
-
-        def trabajo() -> None:
-            import tempfile
-            paquete = colegio.cerrar(codigo, contenido)
-            with tempfile.TemporaryDirectory() as carpeta:
-                colegio.publicar(paquete, carpeta)
-            colegio.guardar_paquete(BUZON_COLEGIO, paquete)       # este PC lo ve al tiro, sin esperar la descarga
-
-        def listo(_resultado, error) -> None:
-            self._publicando = False
-            if error is not None:
-                self.aviso.configure(text=str(error), fg=COLOR_ERROR)
-                return
-            self.contenido = contenido
-            if al_publicar:
-                al_publicar()
-            registrar(f"colegio: {texto_ok}")
-            self.aviso.configure(text=texto_ok, fg=COLOR_OK)
-            refrescar = getattr(self.maestra, "refrescar_avisos", None)
-            if callable(refrescar):
-                refrescar()
-            self.pestanas.elegir(self.pestanas.actual)
-        self.en_segundo_plano(trabajo, listo)
 
 
 def ruta_de_registro(tipo: str) -> str:
@@ -5522,11 +5305,8 @@ class VentanaAjustes(VentanaBase):
         funciones = {"Apariencia": self._apariencia, "Botones": self._botones,
                      "Comportamiento": self._comportamiento, "Windows y sonido": self._windows,
                      "Profesor": self._profesor, "Respaldo": self._respaldo,
-                     "Actualizaciones": self._actualizaciones, "Ayuda": self._ayuda,
-                     "Administrador": self._administrador}
-        # «Administrador» solo en el PC que puede publicar en el buzón del colegio (GitHub CLI con permiso en el repo).
-        nombres = self.PESTANAS + (("Administrador",) if getattr(barra, "es_admin", False) else ())
-        self.pestanas = Pestanas(self.cuerpo, [(n, funciones[n]) for n in nombres], pestana, vertical=True)
+                     "Actualizaciones": self._actualizaciones, "Ayuda": self._ayuda}
+        self.pestanas = Pestanas(self.cuerpo, [(n, funciones[n]) for n in self.PESTANAS], pestana, vertical=True)
         self.pestanas.pack(fill="both", expand=True)
         self.boton("Cerrar", self.destroy)
         self.colocar()
@@ -5773,47 +5553,6 @@ class VentanaAjustes(VentanaBase):
         barra = self.barra
         self.destroy()
         barra.abrir_sin_clases()
-
-    # ------------------------------------------------------------ administrador
-    def _administrador(self, panel) -> None:
-        self._nota(panel, "Lo que publiques llega en unos minutos a la barra de los profes, por GitHub. Lo que va para "
-                          "todos viaja sin cifrar (lo puede leer cualquiera en internet: nada privado). Los mensajes a "
-                          "profes en particular y las claves de IA van cifrados con la clave del colegio.")
-        codigo = colegio.codigo_guardado(vigencia=0)
-        self._titulo(panel, "CLAVE DEL COLEGIO")
-        if codigo:
-            self._nota(panel, f"{colegio.formatear_codigo(codigo)}  ·  pégala una vez en cada PC (⚙ Ajustes → Profesor → "
-                              "«Clave del colegio»). Compártela solo con los profes, nunca en un lugar público.")
-            fila_accion(panel, "📋  Copiar la clave del colegio", lambda: self._copiar_codigo(codigo))
-            self._titulo(panel, "PUBLICAR")
-            fila_accion(panel, "📣  Mensajes y avisos del día…", lambda: VentanaAdministrador(self.barra, "Mensajes"))
-            fila_accion(panel, "🤖  Claves de IA del colegio…", lambda: VentanaAdministrador(self.barra, "Claves de IA"))
-        else:
-            self._nota(panel, "Todavía no hay clave del colegio en este PC. Créala una sola vez: con ella se cifra todo lo "
-                              "que publicas. Si ya la creaste en otro PC, no hagas otra: pégala en Profesor → «Clave del "
-                              "colegio».")
-            fila_accion(panel, "🔑  Crear la clave del colegio", self._crear_codigo)
-
-    def _copiar_codigo(self, codigo: str) -> None:
-        self.clipboard_clear()
-        self.clipboard_append(colegio.formatear_codigo(codigo))
-        messagebox.showinfo("Barra Profe", "La clave del colegio quedó copiada: pégala donde la vayas a enviar.",
-                            parent=self)
-
-    def _crear_codigo(self) -> None:
-        if colegio.leer_paquete(BUZON_COLEGIO) is not None and not messagebox.askyesno(
-                "Barra Profe", "Ya hay avisos publicados con una clave del colegio. Si creas otra, los profes deberán "
-                               "pegar la nueva para seguir recibiendo avisos y claves.\n\n¿Crear una nueva?",
-                icon="warning", default="no", parent=self):
-            return
-        try:
-            codigo = colegio.guardar_codigo(colegio.generar_codigo())
-        except Exception as exc:  # noqa: BLE001  (sin llavero de Windows)
-            messagebox.showerror("Barra Profe", f"No pude guardar la clave del colegio:\n\n{exc}", parent=self)
-            return
-        registrar("se creó la clave del colegio")
-        self._copiar_codigo(codigo)
-        self.pestanas.elegir("Administrador")
 
     def _agregar_profesor(self) -> None:
         barra = self.barra
@@ -6092,7 +5831,6 @@ class Barra(RAIZ_TK):
         self._marcos_resalte: list[tk.Frame] = []
         self._revisando = False      # antes de construir: _actualizar_saludo lo consulta
         self._horario_pedido = False  # «Mi horario» ya se pidió a WebClass en esta sesión (sin asistente)
-        self.es_admin = False         # ¿puede publicar avisos y claves del colegio? (se revisa al rato de abrir)
         # Equipo con varios profesores: parte bloqueada hasta que alguien escriba su PIN (así nadie usa por error la
         # cuenta del profesor anterior). Si se reabrió sola con alguien recién desbloqueado, no lo vuelve a pedir.
         self.bloqueada = debe_partir_bloqueada()
@@ -6132,8 +5870,7 @@ class Barra(RAIZ_TK):
         self.after(2500, self._vigilar_mensajes)
         self.after(2500, self._tour_inicial)
         self.after(5000, self._buscar_periodica)    # versión nueva: al rato de abrir y después cada 6 horas
-        self.after(4000, self._vigilar_colegio)     # avisos y claves de IA del colegio: al rato y cada 20 minutos
-        self.after(7000, self._revisar_admin)
+        self.after(4000, self._vigilar_colegio)     # avisos y claves de IA del colegio: al rato y cada 3 minutos
         if self.preferencias.get("planificador_listo"):
             self.after(8000, preparar_planificador)  # un rato después: que la barra termine de abrir primero
         if not DOCENTES:                             # primer uso: configurar la cuenta sin consola
@@ -6391,13 +6128,18 @@ class Barra(RAIZ_TK):
         self._recolocar()
 
     def _vigilar_colegio(self) -> None:
-        """Cada 20 minutos trae de GitHub el buzón del colegio (en segundo plano), pinta los avisos y avisa lo nuevo.
+        """Cada 3 minutos trae de GitHub el buzón del colegio (en segundo plano), pinta los avisos y avisa lo nuevo.
         Sin internet o sin buzón publicado todavía, no pasa nada: se sigue con lo que ya había."""
         def listo(_cambio, error) -> None:
             if error is not None and not isinstance(error, OSError):
                 registrar("el buzón del colegio no se pudo leer", str(error)[:200])
             self.refrescar_avisos()
-        en_segundo_plano(self, lambda: colegio.descargar(BUZON_COLEGIO), listo)
+        def traer() -> bool:
+            try:
+                return colegio.descargar(BUZON_COLEGIO)
+            finally:
+                colegio.contenido_guardado(BUZON_COLEGIO)  # abrirlo cuesta medio segundo: aquí, no en la ventana
+        en_segundo_plano(self, traer, listo)
         self.after(MS_VIGILAR_COLEGIO, self._vigilar_colegio)
 
     def refrescar_avisos(self) -> None:
@@ -6423,14 +6165,6 @@ class Barra(RAIZ_TK):
             titulo = f"{len(nuevos)} avisos nuevos del colegio"
         Aviso(self, "proceso", titulo, nuevos[0]["texto"][:140], al_pulsar=self._desplegar, segundos=12)
         self.preferencias = guardar_preferencias(avisos_avisados=(avisados + [m["id"] for m in nuevos])[-200:])
-
-    def _revisar_admin(self) -> None:
-        """¿Puede este PC publicar en el buzón del colegio? (GitHub CLI con permiso en el repositorio). Solo entonces
-        Ajustes muestra la pestaña «Administrador»."""
-        if not shutil.which("gh"):
-            return
-        en_segundo_plano(self, colegio.es_administrador,
-                         lambda es, _error: setattr(self, "es_admin", bool(es)))
 
     # ------------------------------------------------------- firmas pendientes
     def _vigilar_firmas(self) -> None:

@@ -60,20 +60,59 @@ PROVEEDORES_IA = (("Gemini (Google)", "GEMINI_API_KEY", "aistudio.google.com/api
 
 
 # ------------------------------------------------------------ clave del colegio
+# La clave del colegio puede ser la generada al azar («K7M2-9QXP-…») o una frase de palabras que elige el administrador
+# («tiza lunes guitarra volcán»). Se escriba como se escriba (mayúsculas, tildes, espacios, guiones) vale lo mismo.
+MINIMO = 16                                  # letras y números que debe tener cualquier clave para intentar usarla
+MIN_PALABRAS, MIN_LETRAS_FRASE = 4, 20       # una frase nueva: lo cifrado está en GitHub público, que no se adivine
+
+
 def generar_codigo() -> str:
-    """Una clave del colegio nueva, en grupos de 4 («K7M2-9QXP-…») para dictarla o copiarla."""
+    """Una clave del colegio al azar, en grupos de 4 («K7M2-9QXP-…») para dictarla o copiarla."""
     return formatear_codigo("".join(secrets.choice(LETRAS) for _ in range(LARGO)))
 
 
 def normalizar_codigo(texto) -> str:
-    """'k7m2-9qxp …' -> 'K7M29QXP…'; '' si no es una clave del colegio válida."""
-    limpio = re.sub(r"[^A-Za-z0-9]", "", str(texto or "")).upper()
-    return limpio if len(limpio) == LARGO and all(c in LETRAS for c in limpio) else ""
+    """La clave como se usa: sin mayúsculas, tildes, espacios ni signos ('' si es demasiado corta para ser una).
+
+    «K7M2-9QXP-…» -> 'k7m29qxp…'   ·   «Tiza lunes, guitarra volcán» -> 'tizalunesguitarravolcan'
+    """
+    limpio = re.sub(r"[^a-z0-9]", "", _sin_tildes(str(texto or "")))
+    return limpio if len(limpio) >= MINIMO else ""
 
 
-def formatear_codigo(codigo) -> str:
-    c = normalizar_codigo(codigo)
-    return "-".join(c[i:i + 4] for i in range(0, len(c), 4))
+def es_generada(texto) -> bool:
+    """¿Es una clave hecha al azar por generar_codigo() (y no una frase)?"""
+    c = normalizar_codigo(texto)
+    return len(c) == LARGO and all(ch in LETRAS.lower() for ch in c)
+
+
+def formatear_codigo(texto) -> str:
+    """Para mostrarla: la generada en grupos de 4 («K7M2-9QXP-…»); una frase, tal como se escribió."""
+    if es_generada(texto):
+        c = normalizar_codigo(texto).upper()
+        return "-".join(c[i:i + 4] for i in range(0, LARGO, 4))
+    return " ".join(str(texto or "").split())
+
+
+def problema_de_frase(texto) -> str:
+    """'' si sirve como clave del colegio NUEVA; si no, qué le falta (al elegir el administrador sus palabras)."""
+    if es_generada(texto):
+        return ""
+    palabras = [p for p in re.split(r"[^a-z0-9]+", _sin_tildes(str(texto or ""))) if p]
+    if len(palabras) < MIN_PALABRAS:
+        return (f"Usa al menos {MIN_PALABRAS} palabras que no tengan que ver entre sí (por ejemplo «tiza lunes guitarra "
+                "volcán»), no el nombre del colegio.")
+    if len(set(palabras)) < len(palabras):
+        return "No repitas palabras."
+    if len("".join(palabras)) < MIN_LETRAS_FRASE:
+        return f"Usa palabras más largas: al menos {MIN_LETRAS_FRASE} letras en total."
+    return ""
+
+
+def _para_cifrar(codigo: str) -> str:
+    """Lo que entra a PBKDF2. Una clave generada va en mayúsculas, como en la 2.11.0: así lo ya publicado se sigue
+    abriendo y una barra 2.11.0 sigue abriendo lo nuevo."""
+    return codigo.upper() if es_generada(codigo) else codigo
 
 
 _derivadas: dict = {}
@@ -83,34 +122,56 @@ def _clave_fernet(codigo: str, sal: bytes) -> bytes:
     """De la clave del colegio a la llave de cifrado (PBKDF2: probar claves al azar cuesta caro)."""
     if (codigo, sal) not in _derivadas:
         _derivadas[(codigo, sal)] = base64.urlsafe_b64encode(
-            hashlib.pbkdf2_hmac("sha256", codigo.encode(), sal, ITERACIONES, 32))
+            hashlib.pbkdf2_hmac("sha256", _para_cifrar(codigo).encode(), sal, ITERACIONES, 32))
     return _derivadas[(codigo, sal)]
 
 
-_codigo_leido = {"instante": 0.0, "codigo": ""}
+_codigo_leido = {"instante": 0.0, "texto": ""}
 
 
-def codigo_guardado(vigencia: float = 30) -> str:
-    """La clave del colegio de este PC ('' si no hay). Se relee cada 30 s: si se pega una nueva, vale al tiro."""
+def _leer_llavero(vigencia: float) -> str:
     if vigencia <= 0 or time.time() - _codigo_leido["instante"] > vigencia:
         try:
             import keyring
-            _codigo_leido["codigo"] = normalizar_codigo(keyring.get_password(SERVICIO, USUARIO) or "")
+            _codigo_leido["texto"] = keyring.get_password(SERVICIO, USUARIO) or ""
         except Exception:  # noqa: BLE001  (sin llavero: como si no hubiera clave)
-            _codigo_leido["codigo"] = ""
+            _codigo_leido["texto"] = ""
         _codigo_leido["instante"] = time.time()
-    return _codigo_leido["codigo"]
+    return _codigo_leido["texto"]
 
 
-def guardar_codigo(codigo) -> str:
-    """Guarda la clave del colegio en el llavero de Windows. ValueError si no es válida."""
-    limpio = normalizar_codigo(codigo)
+def codigo_guardado(vigencia: float = 30) -> str:
+    """La clave del colegio de este PC, lista para usar ('' si no hay). Se relee cada 30 s: si se pega una nueva, vale
+    al tiro."""
+    return normalizar_codigo(_leer_llavero(vigencia))
+
+
+def codigo_escrito(vigencia: float = 30) -> str:
+    """La misma clave para mostrarla: la generada en grupos, la frase tal como se escribió."""
+    return formatear_codigo(_leer_llavero(vigencia))
+
+
+def guardar_codigo(texto) -> str:
+    """Guarda la clave del colegio en el llavero de Windows (tal como se escribió, para poder mostrarla). Devuelve la
+    clave lista para usar. ValueError si es demasiado corta."""
+    limpio = normalizar_codigo(texto)
     if not limpio:
-        raise ValueError(f"La clave del colegio son {LARGO} letras y números (por ejemplo K7M2-9QXP-…). Revísala.")
+        raise ValueError("Escribe la clave del colegio completa: la que te dio el administrador (letras y números en "
+                         "grupos, o una frase de varias palabras).")
+    escrito = formatear_codigo(texto)
     import keyring
-    keyring.set_password(SERVICIO, USUARIO, limpio)
-    _codigo_leido.update(instante=time.time(), codigo=limpio)
+    keyring.set_password(SERVICIO, USUARIO, escrito)
+    _codigo_leido.update(instante=time.time(), texto=escrito)
     return limpio
+
+
+def sal_de(paquete) -> bytes | None:
+    """La sal de un paquete: el administrador la mantiene al publicar con la misma clave, así cada barra calcula la
+    llave una sola vez (medio segundo) y no cada vez que llega algo nuevo."""
+    try:
+        return base64.b64decode(paquete["sal"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 # ------------------------------------------------------------------ el paquete
