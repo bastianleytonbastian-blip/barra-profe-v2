@@ -74,6 +74,20 @@ def nombre_de_cuenta(clave=None):
         return ""
 
 
+def asignaturas_webclass_de_cuenta(clave=None):
+    """Asignaturas de WebClass que Barra leyó para esa cuenta ([{id, nombre}]; solo esa clave del perfil, nunca el RUT
+    ni otros datos). [] si no hay Barra o todavía no se leyeron."""
+    clave = clave or clave_activa()
+    if not EN_BARRA or clave == "local":
+        return []
+    try:
+        with open(os.path.join(_PERFILES_BARRA, f"{clave}.json"), encoding="utf-8-sig") as f:
+            lista = json.load(f).get("asignaturas_webclass") or []
+    except (OSError, ValueError, AttributeError):
+        return []
+    return lista if isinstance(lista, list) else []
+
+
 def _por_usuario(base, clave):
     return os.path.join(base, clave) if EN_BARRA else base
 
@@ -107,3 +121,12 @@ def registro_planificaciones(clave=None):
 def ruta_barra(respaldo=""):
     """Carpeta de Barra Profe: la de la instalación o, si el planificador está suelto, la que el docente indicó."""
     return BARRA or respaldo
+
+
+def tema_de_barra(clave=None):
+    """Archivo donde Barra guarda la apariencia (color, letra, ancho) de esa cuenta. '' si no hay Barra."""
+    if not EN_BARRA:
+        return ""
+    clave = clave or clave_activa()
+    nombre = "tema.json" if clave == "local" else f"tema_{clave}.json"   # misma regla que `_sufijo` en la barra
+    return os.path.join(BARRA, "datos", nombre)

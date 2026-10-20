@@ -193,6 +193,48 @@ class Seleccion(unittest.TestCase):
         self.assertTrue(os.path.isabs(w.archivo_registro("otra_docente_xyz")))   # siempre en datos\\
 
 
+class AsignarConDiasSinClases(unittest.TestCase):
+    """«Asignar clases» no ofrece ni asigna una clase de un día sin clases ni una marcada «no hubo esta clase»."""
+
+    def test_simular_salta_lo_marcado_y_ofrece_marcar_lo_demas(self):
+        import argparse
+        import shutil
+        import tempfile
+        from unittest import mock
+
+        import barra_utiles as bu
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        ruta = os.path.join(tmp, "sin_clases_ana.json")
+        bu.marcar_dias_sin_clases(ruta, [datetime.date(2026, 10, 12)], "Feriado")
+        bu.ignorar_en_sin_clases(ruta, "clases", "c3", "5BA · Clase 3")
+        perfil = {"rut": "1-9", "iduser": "7", "unidades": [{"curso": "5BA", "id": 5, "nombre": "U1"}],
+                  "curso_ids": {"5BA": 1}}
+        args = argparse.Namespace(perfil="ana", guardar_clave=False, ver_destinos=False, destinos=False,
+                                  rehacer_destinos=False, opciones_destino=None, seleccion=None,
+                                  guardar_unidades=False, buscar_unidades=False, unidades=None, meses=None,
+                                  fecha=None, hoy=False, dias_atras=0, simular=True)
+        clases = [{"idclase": f"c{n}", "nombre": f"Clase {n}", "fechaini": f"1{n + 1}/10/2026",
+                   "fechafin": f"1{n + 1}/10/2026", "asignados": 0} for n in (1, 2, 3)]
+        w.ITEMS.clear()
+        self.addCleanup(w.ITEMS.clear)
+        salida = io.StringIO()
+        with mock.patch.multiple(w, parse_args=lambda: args, PERFILES={"ana": perfil}, obtener_password=lambda r: "x",
+                                 crear_session=lambda: None, login=lambda *a: None, verificar_sesion=lambda *a: None,
+                                 archivo_registro=lambda p: os.path.join(tmp, "registro.csv"),
+                                 destinos_elegidos=lambda: {}, unidades_nuevas=lambda *a, **k: ([], False),
+                                 listar_clases=lambda s, u: clases,
+                                 datos_clase=lambda *a: {"idcolegio": 1, "idprofesor": 2, "iduser": 7},
+                                 listar_alumnas=lambda *a: ["a", "b"]), \
+                mock.patch.object(w.rutas, "sin_clases", lambda p: ruta), contextlib.redirect_stdout(salida):
+            w.main()
+        self.assertEqual([i["clave"] for i in w.ITEMS if i["estado"] == "propuesto"], ["c2"])
+        self.assertIn("[SIN CLASES] Clase 1: marcaste que no hubo esa clase (12/10/2026)", salida.getvalue())
+        self.assertIn("[SIN CLASES] Clase 3", salida.getvalue())
+        self.assertEqual(w.ITEMS[0]["sin_clase"], {"campo": "clases", "clave": "c2", "dia": "2026-10-13",
+                                                   "titulo": "5BA · Clase 2 (13/10/2026)"})
+
+
 class OpcionesDeDestino(unittest.TestCase):
     """`asignar --opciones-destino`: solo consulta las unidades pedidas."""
 

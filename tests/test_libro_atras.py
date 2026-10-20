@@ -226,6 +226,89 @@ class HaciaAtras(Base):
         self.assertTrue(any(i["estado"] == "propuesto" and "2026-10-05" in i["clave"] for i in w.ITEMS))
 
 
+class DiasSinClases(Base):
+    """Feriados y clases que no se hicieron: no se registran ni se vuelven a ofrecer como pendientes."""
+
+    def setUp(self):
+        super().setUp()
+        self.sin_clases_original = L.SIN_CLASES
+        self.addCleanup(setattr, L, "SIN_CLASES", self.sin_clases_original)
+        L.SIN_CLASES = {"dias": {}, "bloques": {}, "clases": {}}
+        self.por_fecha = {LUNES: [bloque("08:00", 801)], MARTES: [bloque("12:50", 802, asist=False)]}
+
+    def test_un_dia_marcado_no_se_revisa(self):
+        L.SIN_CLASES["dias"]["2026-10-05"] = "Feriado"
+        (_r, _f), salida = self.correr_rango(LUNES, MIERCOLES, solo_listar=True)
+        self.assertEqual({i["grupo"] for i in w.ITEMS}, {"mar 06/10"})
+        self.assertNotIn(LUNES, self.bloques_pedidos)
+        self.assertIn("Sin clases (lo marcaste), no se revisan: 05/10", salida)
+
+    def test_un_bloque_marcado_no_se_ofrece_y_el_resto_si(self):
+        L.SIN_CLASES["bloques"][L.clave_bloque("4BA", "12:50-00:00", 802) + "|2026-10-06"] = "4BA 12:50"
+        self.correr_rango(LUNES, MIERCOLES, solo_listar=True)
+        self.assertEqual({i["grupo"] for i in w.ITEMS}, {"lun 05/10"})
+
+    def test_registrar_un_dia_marcado_no_escribe_nada(self):
+        L.SIN_CLASES["dias"]["2026-10-06"] = ""
+        self.clases = [{"idclase": "c6", "nombre": "Clase 6", "fechaini": "06/10/2026"}]
+        salida = io.StringIO()
+        with contextlib.redirect_stdout(salida):
+            resumen, firmas = L.registrar_dia(None, PERFIL, MARTES, "t", datetime.datetime.now(), None, False)
+        self.assertEqual((resumen, firmas, self.escrituras, w.ITEMS), ([], [], [], []))
+        self.assertIn("[SIN CLASES]", salida.getvalue())
+
+    def test_si_todos_los_dias_estan_marcados_no_hay_nada_que_hacer(self):
+        for d in ("2026-10-05", "2026-10-06", "2026-10-07"):
+            L.SIN_CLASES["dias"][d] = "Vacaciones"
+        (resumen, firmas), salida = self.correr_rango(LUNES, MIERCOLES, solo_listar=True)
+        self.assertEqual((resumen, firmas, self.bloques_pedidos), ([], [], []))
+        self.assertIn("No queda ningún día por revisar", salida)
+
+    def test_cada_item_dice_como_marcarlo_sin_clase(self):
+        self.correr_rango(LUNES, LUNES, solo_listar=True)
+        marca = w.ITEMS[0]["sin_clase"]
+        self.assertEqual(marca["campo"], "bloques")
+        self.assertEqual(marca["dia"], "2026-10-05")
+        self.assertEqual(marca["clave"], w.ITEMS[0]["clave"])          # la de la casilla, con su fecha
+        self.assertIn("05/10", marca["titulo"])
+
+    def test_un_solo_dia_tambien_lleva_la_fecha_en_la_marca(self):
+        self.correr_dia(MARTES, simular=True)
+        marcas = {i["sin_clase"]["clave"] for i in w.ITEMS if i.get("sin_clase")}
+        self.assertEqual(marcas, {L.clave_bloque("4BA", "12:50-00:00", 802) + "|2026-10-06"})
+
+
+class AtrasadosConDiasSinClases(Base):
+    """La tarjeta «Hoy» (estado_firmas) no cuenta como atrasado lo marcado sin clases."""
+
+    def setUp(self):
+        super().setUp()
+        import estado_firmas
+        self.E = estado_firmas
+        completo = dict(bloque("09:40", 803, oa=True, lecc=True), val_firma=True)
+        self.por_fecha = {LUNES: [bloque("08:00", 801)], MARTES: [bloque("12:50", 802)], MIERCOLES: [completo]}
+        self.jueves = datetime.date(2026, 10, 8)
+
+    def atrasados(self, sin_clases=None):
+        return self.E.atrasados(None, "t", PERFIL, self.jueves, dias=3, sin_clases=sin_clases)
+
+    def test_sin_marcas_cuenta_los_dos_dias_con_sus_claves(self):
+        r = self.atrasados()
+        self.assertEqual([a["fecha"] for a in r], ["06/10/2026", "05/10/2026"])
+        self.assertEqual(r[0]["claves"], [L.clave_bloque("4BA", "12:50-00:00", 802) + "|2026-10-06"])
+
+    def test_un_dia_marcado_no_cuenta_ni_gasta_uno_de_los_dias_revisados(self):
+        r = self.atrasados({"dias": {"2026-10-05": "Feriado"}, "bloques": {}})
+        self.assertEqual([a["fecha"] for a in r], ["06/10/2026"])
+        self.assertIn(datetime.date(2026, 10, 2), self.bloques_pedidos)   # siguió hasta el viernes anterior
+        self.assertNotIn(LUNES, self.bloques_pedidos)
+
+    def test_un_bloque_marcado_no_cuenta(self):
+        clave = L.clave_bloque("4BA", "12:50-00:00", 802) + "|2026-10-06"
+        r = self.atrasados({"dias": {}, "bloques": {clave: ""}})
+        self.assertEqual([a["fecha"] for a in r], ["05/10/2026"])
+
+
 class PrimeraVistaDeCaches(unittest.TestCase):
     def test_las_unidades_se_piden_por_fecha(self):
         pedidas = []

@@ -9,15 +9,16 @@ Las herramientas se leen de herramientas.json, que está al lado de este
 archivo: para agregar o sacar botones se edita ese archivo, no el código.
 La barra vigila ese archivo y se recarga sola cuando lo guardas.
 
-Arriba de los botones muestra qué clase o actividad hay ahora y cuál viene
-(lo lee del horario semanal que mantiene el asistente), y tiene un campo
-para anotar: lo que escribas ahí se guarda en la bandeja del asistente y él
-lo agenda o lo anota como tarea cuando procesa la bandeja.
+Arriba de los botones muestra qué clase hay ahora y cuál viene (del horario
+del asistente, si lo hay, o de «Mi horario» de Webclass) y cómo va el libro.
 
 Solo corre una barra a la vez: si la abres de nuevo, o aprietas el atajo de
 teclado, la copia nueva le avisa a la que ya está abierta (por un puerto
-local) y se cierra sola. La barra que estaba se despliega con el cursor
-puesto en el campo de anotar.
+local) y se cierra sola. La barra que estaba se despliega.
+
+En un equipo con varios profesores, cada uno tiene un PIN de 4 números: la
+barra parte bloqueada y para usarla (o cambiar de profesor) se escribe el
+PIN. Si se olvida, se entra con la contraseña de Webclass y se crea otro.
 
 Se ejecuta con pythonw.exe (sin consola): así lo hacen el .bat, el acceso
 directo del escritorio y el de inicio de Windows. Como no hay consola, todo
@@ -58,16 +59,22 @@ def carpeta_datos() -> str:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rutas                              # noqa: E402
 import re                                 # noqa: E402
+import tema                               # noqa: E402
+import colegio                            # noqa: E402
 from barra_utiles import (                # noqa: E402
     ATAJOS_ATRAS, ESTADOS, TOUR_PASOS, agrupar_items, ahora_y_luego, aplicar_destinos,
     argumentos_de_seleccion, cargar_ejecuciones, comando_con_seleccion, dias_de_periodos,
-    escribir_atomico, escribir_seleccion, estado_vencido, etiqueta_de_linea, explicar_motivo, filas_de_destinos,
+    escribir_atomico, escribir_seleccion, estado_vencido, guardar_botones, leer_botones, etiqueta_de_linea, explicar_motivo, filas_de_destinos,
     formatear_fechas, meses_escolares, periodos_de_revision, version_del_codigo,
     formatear_duracion, guardar_ejecucion, hace_cuanto, lineas_de_resultado, marcar_tour_visto,
-    minutos, monitores, parsear_item, parsear_opciones, parsear_progreso, partes_de_comando,
+    minutos, monitores, niveles_del_docente, nombre_de_nivel, opciones_de_pregunta, ordenar_carpetas, parsear_item, parsear_opciones, parsear_progreso, partes_de_comando,
     rango_de_atajo, reemplazar_variables, resumir_ejecucion, saludo_para, tour_pendiente,
     asunto_de_correo, cursos_en_nombres, problemas_de_observacion, texto_atrasados, texto_de_correo, traducir_error,
-    vista_previa_libro, vista_previa_simulacion, vista_previa_subir)
+    vista_previa_libro, vista_previa_simulacion, vista_previa_subir,
+    asignatura_corta, bloques_de_horario_webclass, horario_vencido, leer_json, pestana_de_registro,
+    PIN_VALIDO, desbloqueo_vigente, guardar_pin, marcar_desbloqueo, pin_correcto, ruta_pin, tiene_pin,
+    DIAS_CORTOS, aplicar_sin_clases, dias_para_marcar, fecha_de_estado, fecha_iso, ignorar_en_sin_clases,
+    leer_sin_clases, marcar_dias_sin_clases, quitar_sin_clases, tramos_sin_clases, parsear_fecha)
 
 CARPETA = rutas.CODIGO
 # Los botones: primero los de este docente (personal\), si no la plantilla.
@@ -80,9 +87,8 @@ LOG = rutas.dato("barra_profe.log")
 
 CASA = os.path.expanduser("~")
 
-# Carpeta del asistente (Claude). De ahí salen el horario y ahí va la bandeja.
+# Carpeta del asistente personal (si lo hay): de ahí sale su horario para «Ahora / Luego».
 ASISTENTE = os.path.join(CASA, "Asistente personal beta")
-BANDEJA = os.path.join(ASISTENTE, "entrada", "bandeja.jsonl")
 HORARIO = os.path.join(ASISTENTE, "perfil", "horario_semanal.json")
 AGENDA_HOY = os.path.join(ASISTENTE, "registro", "agenda_hoy.json")
 
@@ -116,6 +122,22 @@ if PERFIL not in [c for c, _ in DOCENTES]:        # se borró el perfil activo
     PERFIL = DOCENTES[0][0] if DOCENTES else ""
 NOMBRE_COMPLETO = next((n for c, n in DOCENTES if c == PERFIL), "")
 
+
+def equipo_compartido() -> bool:
+    """¿Usan este equipo varios profesores? Entonces cada uno tiene su PIN y la barra parte bloqueada."""
+    return len(DOCENTES) >= 2
+
+
+# Si la barra está desbloqueada cuando se reabre sola, la nueva no vuelve a pedir el PIN (ver reabrir_barra).
+DESBLOQUEO = {"activo": False}
+RUTA_DESBLOQUEO = rutas.dato("desbloqueo.json")
+
+
+def debe_partir_bloqueada() -> bool:
+    """Al abrir la barra: bloqueada si el equipo es compartido, salvo que se haya reabierto sola con alguien que
+    acababa de escribir su PIN."""
+    return equipo_compartido() and not desbloqueo_vigente(RUTA_DESBLOQUEO, PERFIL)
+
 WEBCLASS = CARPETA          # la barra vive junto a las herramientas
 # Cada docente tiene lo suyo: si no, al cambiar de profe se vería el libro ajeno.
 _sufijo = f"_{PERFIL}" if PERFIL else ""
@@ -136,6 +158,15 @@ def clave_de_mensajeria() -> str:
 def guardar_clave_mensajeria(clave: str) -> None:
     import keyring
     keyring.set_password(SERVICIO_MENSAJERIA, "grupo", clave.strip())
+
+
+def rut_del_docente() -> str:
+    """El RUT del docente activo (para saber qué mensajes del colegio van para él). Nunca se muestra ni se envía."""
+    try:
+        with open(os.path.join(rutas.PERFILES, f"{PERFIL}.json"), encoding="utf-8-sig") as f:
+            return str(json.load(f).get("rut") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
 
 
 def nombre_en_mensajeria() -> str:
@@ -170,7 +201,8 @@ def comando_webclass(subcomando: str, *opciones: str) -> list[str]:
                "libro": os.path.join(WEBCLASS, "webclass_libro.py"),
                "observar": os.path.join(WEBCLASS, "webclass_observaciones.py"),
                "planificar": os.path.join(WEBCLASS, "webclass_planificacion.py"),
-               "correo": os.path.join(WEBCLASS, "correo_pie.py")}
+               "correo": os.path.join(WEBCLASS, "correo_pie.py"),
+               "configurar": os.path.join(WEBCLASS, "configurar.py")}
     # Siempre con el docente activo: en la sala de profesores hay varios.
     perfil = ["--perfil", PERFIL] if PERFIL else []
     for base in (CARPETA, WEBCLASS):
@@ -185,71 +217,84 @@ def comando_webclass(subcomando: str, *opciones: str) -> list[str]:
 
 BUZON = os.path.join(CASA, "Documents", "Subir a Webclass")
 
-MARCA_AGUA = "Anotar… (Enter)"
 # Lista de verificación: vive solo en este archivo, sin internet ni asistente.
 TAREAS = rutas.dato(f"lista_tareas{_sufijo}.json")
 # Último resultado de cada botón (para mostrar "hoy 14:32 · completado").
 EJECUCIONES = rutas.dato(f"ultimas_ejecuciones{_sufijo}.json")
 # Si este docente ya vio el recorrido de bienvenida.
 TOUR = rutas.dato(f"tour{_sufijo}.json")
+# Lo que el docente deja abierto o cerrado en la barra (grupos de botones, tarjeta «Hoy», notas).
+PREFERENCIAS = rutas.dato(f"preferencias{_sufijo}.json")
+# Días (y clases) que el docente marcó como «no hubo clases»: feriados, vacaciones. Lo leen también el libro y
+# las tareas, por eso la ruta sale de rutas.sin_clases().
+SIN_CLASES = rutas.sin_clases(PERFIL)
+# Lo que reparte el administrador (avisos y claves de IA del colegio): un archivo cifrado por equipo, que se trae de
+# GitHub cada 20 minutos. Qué avisos ya marcó leídos cada docente va aparte.
+BUZON_COLEGIO = rutas.dato(colegio.ARCHIVO)
+AVISOS_LEIDOS = rutas.dato(f"avisos_leidos{_sufijo}.json")
+MS_VIGILAR_COLEGIO = 20 * 60 * 1000
+# Favoritos de quien todavía no eligió los suyos (clic derecho en un botón: «Agregar a favoritos»).
+FAVORITOS_INICIALES = ("Registrar libro", "Asignar clases", "Planificar", "Subir recursos", "Escala de notas")
+GRUPO_FAVORITOS = "★ Favoritos"
 MARCA_TAREA = "Agregar a la lista… (Enter)"
 PUERTO = 50573        # puerto local: instancia única y atajo de teclado
 VERSION_CODIGO = version_del_codigo(CARPETA)      # qué tan nuevo es el programa que corre
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 
-# Paletas. La primera es la de siempre (morados oscuros y blancos); el botón
-# «Cambiar color» de la barra rota entre estas y recuerda la elegida.
-PALETAS = {
-    "morado": {"nombre": "Morado", "fondo": "#17122a", "boton": "#241c3d",
-               "hover": "#3b2d66", "pulsado": "#513c8c", "acento": "#a78bfa",
-               "texto": "#ffffff", "tenue": "#b3a8d6", "lengueta": "#7c5cff"},
-    "azul": {"nombre": "Azul noche", "fondo": "#0f1829", "boton": "#1b2740",
-             "hover": "#2a3c63", "pulsado": "#3a5288", "acento": "#7cb3ff",
-             "texto": "#ffffff", "tenue": "#a3b8d9", "lengueta": "#4a8cff"},
-    "verde": {"nombre": "Verde pizarra", "fondo": "#10211c", "boton": "#1a3129",
-              "hover": "#27493d", "pulsado": "#336152", "acento": "#6ee7b7",
-              "texto": "#ffffff", "tenue": "#a4cdbd", "lengueta": "#34d399"},
-    "vino": {"nombre": "Vino", "fondo": "#231016", "boton": "#391a23",
-             "hover": "#5a2936", "pulsado": "#7a3646", "acento": "#fb9eb5",
-             "texto": "#ffffff", "tenue": "#d9aeb8", "lengueta": "#e35d7d"},
-    "grafito": {"nombre": "Grafito", "fondo": "#16181d", "boton": "#23262e",
-                "hover": "#343843", "pulsado": "#464b59", "acento": "#cbd5e1",
-                "texto": "#ffffff", "tenue": "#a7aebb", "lengueta": "#94a3b8"},
-}
+# Paletas: viven en tema.py, que también lee el planificador. Cada una es un juego completo de colores con nombre
+# (las ventanas nunca usan un color escrito a mano). La elegida es de cada docente y se guarda en TEMA.
+PALETAS = tema.PALETAS
+
+
+def apariencia_guardada() -> dict:
+    """{"paleta", "letra", "ancho"} elegidos por este docente (lo que falte o no exista, con su valor inicial)."""
+    try:
+        with open(TEMA, encoding="utf-8-sig") as f:
+            datos = json.load(f)
+    except (OSError, ValueError):
+        datos = {}
+    datos = datos if isinstance(datos, dict) else {}
+    return {"paleta": datos.get("paleta") if datos.get("paleta") in PALETAS else tema.PALETA_INICIAL,
+            "letra": datos.get("letra") if datos.get("letra") in tema.TAMANOS_LETRA else "normal",
+            "ancho": datos.get("ancho") if datos.get("ancho") in tema.ANCHOS_BARRA else "normal"}
 
 
 def paleta_guardada() -> str:
-    try:
-        with open(TEMA, encoding="utf-8-sig") as f:
-            clave = json.load(f).get("paleta", "")
-        if clave in PALETAS:
-            return clave
-    except (OSError, ValueError):
-        pass
-    return "morado"
+    return apariencia_guardada()["paleta"]
 
 
 def aplicar_paleta(clave: str) -> None:
     """Deja los COLOR_* en los de esa paleta. Se usa al abrir y al cambiarla."""
-    p = PALETAS.get(clave, PALETAS["morado"])
+    p = tema.paleta(clave)
     g = globals()
-    g["PALETA"] = clave
-    g["COLOR_FONDO"] = p["fondo"]
-    g["COLOR_BOTON"] = p["boton"]
-    g["COLOR_HOVER"] = p["hover"]
-    g["COLOR_PULSADO"] = p["pulsado"]
-    g["COLOR_ACENTO"] = p["acento"]
-    g["COLOR_TEXTO"] = p["texto"]
-    g["COLOR_TENUE"] = p["tenue"]
-    g["COLOR_LENGUETA"] = p["lengueta"]
+    g["PALETA"] = clave if clave in PALETAS else tema.PALETA_INICIAL
+    for nombre, campo in (("COLOR_FONDO", "fondo"), ("COLOR_BOTON", "boton"), ("COLOR_HOVER", "hover"),
+                          ("COLOR_PULSADO", "pulsado"), ("COLOR_ACENTO", "acento"), ("COLOR_TEXTO", "texto"),
+                          ("COLOR_TENUE", "tenue"), ("COLOR_SUAVE", "suave"), ("COLOR_LENGUETA", "lengueta"),
+                          ("COLOR_ALERTA", "alerta"), ("COLOR_OK", "ok"), ("COLOR_AVISO", "aviso"),
+                          ("COLOR_ERROR", "error"), ("COLOR_CONSOLA", "consola"),
+                          ("COLOR_CONSOLA_TEXTO", "consola_texto"), ("COLOR_SOBRE_ACENTO", "sobre_acento"),
+                          ("COLOR_SOBRE_LENGUETA", "sobre_lengueta")):
+        g[nombre] = p[campo]
+    g["COLOR_ALERTA_SUAVE"] = p["aviso"]      # advertencias que no son error
 
 
-PALETA = "morado"
-COLOR_SUAVE = "#7f74a8"      # detalles discretos pero visibles (la ✕ de la lista)
-COLOR_ALERTA_SUAVE = "#f0c775"   # advertencias que no son error
-COLOR_ERROR = "#ff8b9a"
-COLOR_ALERTA = "#e0455f"     # lengüeta cuando quedan bloques sin firmar
-aplicar_paleta(paleta_guardada())
+def aplicar_apariencia(datos: dict) -> None:
+    """Colores, tamaño de letra y ancho de la barra elegidos (Ajustes → Apariencia)."""
+    aplicar_paleta(datos.get("paleta", tema.PALETA_INICIAL))
+    globals()["ESCALA_LETRA"] = tema.TAMANOS_LETRA.get(datos.get("letra"), 1.0)
+    globals()["ANCHO"] = tema.ANCHOS_BARRA.get(datos.get("ancho"), tema.ANCHOS_BARRA["normal"])
+
+
+def letra(puntos: int, *estilo: str, familia: str = "Segoe UI") -> tuple:
+    """Fuente de la barra: escala común (nada bajo 9 pt) por el tamaño de letra que eligió el docente."""
+    return (familia, tema.tamano_letra(puntos, ESCALA_LETRA), *estilo)
+
+
+PALETA = tema.PALETA_INICIAL
+ESCALA_LETRA = 1.0
+ANCHO = tema.ANCHOS_BARRA["normal"]   # ancho de la barra desplegada (a escala 100 %)
+aplicar_apariencia(apariencia_guardada())
 
 def ajustar_escalado() -> None:
     """Le dice a Windows que la ventana maneja su propio escalado.
@@ -311,8 +356,7 @@ MOTIVO_SIN_SOLTAR = ""
 DND_FILES, _RAIZ_CON_SOLTAR = _soltar_disponible()
 RAIZ_TK = _RAIZ_CON_SOLTAR or tk.Tk
 
-ANCHO = 210          # ancho de la barra desplegada (a escala 100%)
-LENGUETA = 10        # ancho de la lengüeta cuando está plegada
+LENGUETA = 10        # ancho de la lengüeta cuando está plegada (el de la barra desplegada: ANCHO, según la apariencia)
 ALTO_LENGUETA = 150
 MARGEN = 60          # cuánto más allá del borde se considera "el mouse encima"
 
@@ -323,6 +367,7 @@ MS_AL_FRENTE = 4_000              # reafirmar «siempre encima»
 MS_VIGILAR_CONFIG = 2_000         # ¿cambió herramientas.json?
 MS_VIGILAR_AGENDA = 60_000        # refrescar «Ahora / Luego»
 MS_VIGILAR_LIBRO = 120_000        # ¿hay que revisar el libro de clases?
+MS_BUSCAR_ACTUALIZACION = 6 * 3600 * 1000   # la barra pasa días abierta: busca versión nueva cada 6 horas
 MINUTOS_VALIDEZ_LIBRO = 20        # cuánto vale una revisión del libro
 SEGUNDOS_TOPE_REVISION = 300      # una revisión que pasa de esto se cancela
 
@@ -348,52 +393,42 @@ def registrar(mensaje: str, detalle: str = "") -> None:
         pass      # si ni siquiera se puede registrar, no vale la pena insistir
 
 
-# ---------------------------------------------------------------------- bandeja
-def anotar(texto: str) -> None:
-    """Agrega una nota a la bandeja del asistente."""
-    nota = {"id": datetime.datetime.now().isoformat(timespec="seconds"),
-            "texto": texto, "estado": "pendiente", "origen": "barra"}
-    os.makedirs(os.path.dirname(BANDEJA), exist_ok=True)
-    linea = json.dumps(nota, ensure_ascii=False) + "\n"
-    # Si la última línea quedó sin salto (corte a medias), la nota nueva no
-    # debe pegarse a ella. Todo va en un solo write para que sea indivisible.
+# ------------------------------------------------------------------ preferencias
+def leer_preferencias() -> dict:
     try:
-        with open(BANDEJA, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            if f.tell() and (f.seek(-1, os.SEEK_END), f.read(1))[1] != b"\n":
-                linea = "\n" + linea
-    except OSError:
-        pass
-    with open(BANDEJA, "a", encoding="utf-8", newline="") as f:
-        f.write(linea)
-        f.flush()
-        os.fsync(f.fileno())
+        with open(PREFERENCIAS, encoding="utf-8-sig") as f:
+            datos = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return datos if isinstance(datos, dict) else {}
 
 
-def pendientes() -> int:
-    """Cuántas notas siguen esperando a que el asistente las procese."""
-    total = 0
+def guardar_preferencias(**cambios) -> dict:
+    """Suma `cambios` a las preferencias guardadas y devuelve todas. Si no se puede escribir, la barra sigue igual."""
+    datos = {**leer_preferencias(), **cambios}
     try:
-        with open(BANDEJA, encoding="utf-8") as f:
-            for linea in f:
-                try:
-                    if json.loads(linea).get("estado") == "pendiente":
-                        total += 1
-                except ValueError:      # línea a medio escribir: se ignora
-                    continue
-    except OSError:
-        return 0
-    return total
+        escribir_atomico(PREFERENCIAS, json.dumps(datos, ensure_ascii=False, indent=1))
+    except OSError as exc:
+        registrar("no se pudieron guardar las preferencias", str(exc))
+    return datos
 
 
 # ---------------------------------------------------------------------- agenda
+def hay_agenda() -> bool:
+    """¿De dónde sacar «Ahora / Luego»? Del horario del asistente o, si no hay, de «Mi horario» de WebClass."""
+    return os.path.isfile(HORARIO) or bool(leer_json(HORARIO_SEMANA).get("bloques"))
+
+
 def agenda_de_hoy(ahora: datetime.datetime | None = None) -> list[dict]:
-    """Bloques de hoy: el horario semanal más lo que agregue el asistente.
+    """Bloques de hoy: el horario semanal más lo que agregue el asistente o, si no hay asistente, «Mi horario» de
+    WebClass (la semana tipo).
 
     Devuelve lista vacía si hoy no hay clases (fin de semana, feriado o fuera
     del año escolar).
     """
     ahora = ahora or datetime.datetime.now()
+    if not os.path.isfile(HORARIO):
+        return bloques_de_horario_webclass(leer_json(HORARIO_SEMANA), ahora.date())
     hoy = ahora.date().isoformat()
     bloques: list[dict] = []
     try:
@@ -481,6 +516,29 @@ def sonar_al_abrir() -> None:
     threading.Thread(target=reproducir, daemon=True).start()
 
 
+LANZADOR_PLANIFICADOR = os.path.join(CARPETA, "planificador", "lanzar_planificador.pyw")
+
+
+def preparar_planificador() -> bool:
+    """Deja el planificador corriendo en segundo plano, sin ventanas ni navegador: así «Planificar» abre al tiro.
+
+    Si este usuario ya tiene uno abierto, el lanzador no hace nada. False si no se pudo (o no viene el planificador).
+    """
+    if not os.path.isfile(LANZADOR_PLANIFICADOR):
+        return False
+    piton = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    if getattr(sys, "frozen", False) or not os.path.isfile(piton):
+        piton = "pythonw.exe"
+    try:
+        subprocess.Popen([piton, LANZADOR_PLANIFICADOR, "--solo-servidor"], cwd=os.path.dirname(LANZADOR_PLANIFICADOR),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except OSError as exc:
+        registrar("no se pudo dejar listo el planificador", str(exc))
+        return False
+    return True
+
+
 def abrir_en_consola(titulo: str, orden: list[str]) -> None:
     """Abre la herramienta en una consola donde el docente pueda responder.
 
@@ -510,13 +568,20 @@ def abrir_en_consola(titulo: str, orden: list[str]) -> None:
     os.startfile(lanzador)
 
 
-def reabrir_barra() -> None:
+def reabrir_barra(desbloqueado: str | None = None) -> None:
     """Cierra esta barra y abre una nueva.
 
     Cambiar de docente o de color toca cosas que ya están dibujadas (los
     colores de cada widget, el saludo, los archivos de cada profe): rehacer la
     ventana entera es más simple y más seguro que ir repintando a mano.
+    Quien ya escribió su PIN (o `desbloqueado`, que lo acaba de escribir) no tiene que volver a escribirlo.
     """
+    perfil = desbloqueado or (PERFIL if DESBLOQUEO["activo"] else "")
+    if perfil:
+        try:
+            marcar_desbloqueo(RUTA_DESBLOQUEO, perfil)
+        except OSError:
+            pass                    # la nueva pedirá el PIN: no es grave
     if getattr(sys, "frozen", False):
         orden = [sys.executable]
     else:
@@ -537,17 +602,53 @@ def reabrir_barra() -> None:
     os._exit(0)          # sin esperar al mainloop: el puerto queda libre al tiro
 
 
-def guardar_color(clave: str) -> None:
-    """Deja elegida esa paleta y reabre la barra con ella."""
+def guardar_apariencia(barra=None, reabrir_ajustes: str | None = None, **cambios) -> bool:
+    """Guarda la apariencia elegida (paleta, letra, ancho) y la aplica en vivo, sin cerrar la barra.
+
+    Sin barra (desde fuera de la ventana) se aplica al abrirla de nuevo. Devuelve False si no se pudo guardar.
+    """
+    datos = {**apariencia_guardada(), **{k: v for k, v in cambios.items() if v is not None}}
+    try:
+        escribir_atomico(TEMA, json.dumps(datos))
+    except OSError as exc:
+        registrar("no se pudo guardar la apariencia", str(exc))
+        return False
+    aplicar_apariencia(datos)
+    registrar(f"apariencia: paleta {datos['paleta']}, letra {datos['letra']}, ancho {datos['ancho']}")
+    if barra is not None:
+        barra.reconstruir(reabrir_ajustes)
+    return True
+
+
+def guardar_color(clave: str, barra=None, reabrir_ajustes: str | None = None) -> None:
+    """Deja elegida esa paleta y la aplica (en vivo si se conoce la barra; si no, reabriéndola)."""
     if clave == PALETA:
         return
-    try:
-        escribir_atomico(TEMA, json.dumps({"paleta": clave}))
-    except OSError as exc:
-        registrar("no se pudo guardar el color", str(exc))
-        return
-    registrar(f"color cambiado a {PALETAS[clave]['nombre']}")
-    reabrir_barra()
+    if guardar_apariencia(barra, reabrir_ajustes, paleta=clave):
+        registrar(f"color cambiado a {PALETAS[clave]['nombre']}")
+        if barra is None:
+            reabrir_barra()
+
+
+def cargar_docente(clave: str) -> None:
+    """Deja activo a ese docente en el programa: sus archivos (lista, libro, ajustes…) y su apariencia.
+
+    Antes, cambiar de profesor cerraba y reabría la barra entera; ahora basta con esto y `Barra.reconstruir()`.
+    """
+    g = globals()
+    g["DOCENTES"] = docentes_registrados()
+    g["PERFIL"] = clave
+    g["NOMBRE_COMPLETO"] = next((n for c, n in g["DOCENTES"] if c == clave), "")
+    g["NOMBRE"] = g["NOMBRE_COMPLETO"].split(" ")[0] if g["NOMBRE_COMPLETO"] else ""
+    sufijo = f"_{clave}" if clave else ""
+    g["_sufijo"] = sufijo
+    for nombre, base in (("RUTA_MENSAJES", "mensajes"), ("ESTADO_FIRMAS", "estado_firmas"), ("TEMA", "tema"),
+                         ("HORARIO_SEMANA", "horario_semana"), ("TAREAS", "lista_tareas"),
+                         ("EJECUCIONES", "ultimas_ejecuciones"), ("TOUR", "tour"), ("PREFERENCIAS", "preferencias"),
+                         ("AVISOS_LEIDOS", "avisos_leidos")):
+        g[nombre] = rutas.dato(f"{base}{sufijo}.json")
+    g["SIN_CLASES"] = rutas.sin_clases(clave)
+    aplicar_apariencia(apariencia_guardada())
 
 
 def cambiar_color(maestra: tk.Misc | None = None) -> None:
@@ -556,13 +657,9 @@ def cambiar_color(maestra: tk.Misc | None = None) -> None:
 
 
 def cambiar_docente(maestra: tk.Misc | None = None) -> None:
-    """Elige entre los docentes registrados en este PC y reabre la barra."""
+    """Elige entre los docentes registrados en este PC (con uno solo, ofrece agregar otro)."""
     if len(DOCENTES) < 2:
-        messagebox.showinfo(
-            "Barra Profe",
-            "En este equipo hay un solo docente registrado.\n\n"
-            "Para agregar otro, abre una ventana de comandos en la carpeta "
-            "de la herramienta y escribe:\n\n    python configurar.py")
+        VentanaCuenta(maestra, "agregar")
         return
     VentanaDocentes(maestra)
 
@@ -597,6 +694,9 @@ def abrir_asistente_ia(lanzador: str) -> None:
 
 def abrir(herramienta: dict, maestra: tk.Misc | None = None) -> None:
     """Ejecuta un .bat, abre una carpeta, un archivo o una URL."""
+    if getattr(maestra, "bloqueada", False):       # barra bloqueada (equipo compartido): primero el PIN
+        maestra.pedir_pin()
+        return
     tipo = herramienta.get("tipo", "programa")
     destino = ruta_util(herramienta.get("destino", ""))
     nombre = herramienta.get("nombre", "(sin nombre)")
@@ -672,10 +772,18 @@ def abrir(herramienta: dict, maestra: tk.Misc | None = None) -> None:
             VentanaTickets(maestra, herramienta)
         elif tipo == "horario":
             VentanaHorario(maestra)
+        elif tipo == "sin-clases":
+            if callable(getattr(maestra, "abrir_sin_clases", None)):
+                maestra.abrir_sin_clases()
+            else:
+                VentanaSinClases(maestra)
         elif tipo == "color":
             cambiar_color(maestra)
         elif tipo == "perfil":
             cambiar_docente(maestra)
+        elif tipo == "registros" or (tipo == "programa" and pestana_de_registro(herramienta.get("destino", ""))):
+            # Los botones «Registro de…» abren «Mis registros» en su pestaña (antes, el CSV directo en Excel)
+            VentanaRegistros(maestra, pestana_de_registro(herramienta.get("destino", "")) or destino or "Libro")
         elif not destino.strip():
             # Un botón sin destino casi siempre es uno NUEVO que esta barra (abierta
             # antes de actualizar el programa) todavía no sabe usar: antes abría la
@@ -699,7 +807,7 @@ def abrir(herramienta: dict, maestra: tk.Misc | None = None) -> None:
 
 def color_de_estado(estado: str) -> str:
     """Color de cada estado de una actividad, según la paleta activa."""
-    return {"proceso": COLOR_ACENTO, "completado": "#6fd18c", "avisos": "#f0c775",
+    return {"proceso": COLOR_ACENTO, "completado": COLOR_OK, "avisos": COLOR_AVISO,
             "error": COLOR_ERROR, "cancelado": COLOR_TENUE}.get(estado, COLOR_TENUE)
 
 
@@ -708,6 +816,192 @@ GIRO = "◐◓◑◒"       # cuadros del indicador "en proceso"
 
 def cuadro_de_giro() -> str:
     return GIRO[int(time.time() * 6) % len(GIRO)]
+
+
+def estilo_campo(campo: tk.Misc) -> tk.Misc:
+    """Campo de texto con borde visible (se ve dónde escribir) que se enciende con el foco."""
+    campo.configure(bg=COLOR_BOTON, fg=COLOR_TEXTO, insertbackground=COLOR_TEXTO, bd=0, relief="flat",
+                    highlightthickness=1, highlightbackground=COLOR_SUAVE, highlightcolor=COLOR_ACENTO)
+    return campo
+
+
+class BarraOscura(tk.Canvas):
+    """Barra de desplazamiento con los colores de la paleta: la de Windows es gris clara y desentona.
+
+    Se usa igual que un Scrollbar: `BarraOscura(padre, command=widget.yview)` y `widget(yscrollcommand=b.set)`.
+    """
+
+    def __init__(self, padre, command=None, ancho: int = 10):
+        super().__init__(padre, width=ancho, bg=COLOR_BOTON, highlightthickness=0, bd=0, cursor="hand2")
+        self.command = command
+        self.inicio, self.fin = 0.0, 1.0
+        self.bind("<Configure>", lambda _e: self._dibujar())
+        self.bind("<Button-1>", lambda e: self._mover_a(e.y))
+        self.bind("<B1-Motion>", lambda e: self._mover_a(e.y))
+        self.bind("<MouseWheel>", lambda e: self.command and self.command("scroll", int(-e.delta / 120), "units"))
+
+    def set(self, inicio, fin) -> None:          # noqa: A003  (mismo nombre que en tk.Scrollbar)
+        self.inicio, self.fin = float(inicio), float(fin)
+        self._dibujar()
+
+    def _dibujar(self) -> None:
+        try:
+            self.delete("all")
+            alto, ancho = max(self.winfo_height(), 1), int(self.cget("width"))
+            arriba = int(self.inicio * alto)
+            abajo = min(alto, max(int(self.fin * alto), arriba + 18))
+            self.create_rectangle(2, arriba, ancho - 2, abajo, fill=COLOR_SUAVE, outline="")
+        except tk.TclError:
+            pass
+
+    def _mover_a(self, y: int) -> None:
+        if self.command:
+            tamano = self.fin - self.inicio
+            self.command("moveto", max(0.0, min(1.0 - tamano, y / max(self.winfo_height(), 1) - tamano / 2)))
+
+
+def estilo_combos(ventana: tk.Misc) -> None:
+    """Listas desplegables (Combobox) con los colores de la paleta: se prepara al abrir cada ventana."""
+    estilo = ttk.Style(ventana)
+    try:
+        estilo.theme_use("clam")
+    except tk.TclError:
+        pass
+    estilo.configure("Barra.TCombobox", fieldbackground=COLOR_BOTON, background=COLOR_BOTON,
+                     foreground=COLOR_TEXTO, arrowcolor=COLOR_ACENTO, bordercolor=COLOR_SUAVE,
+                     lightcolor=COLOR_BOTON, darkcolor=COLOR_BOTON, padding=4)
+    estilo.map("Barra.TCombobox", fieldbackground=[("readonly", COLOR_BOTON)],
+               foreground=[("readonly", COLOR_TEXTO)])
+    ventana.option_add("*TCombobox*Listbox.background", COLOR_BOTON)
+    ventana.option_add("*TCombobox*Listbox.foreground", COLOR_TEXTO)
+    ventana.option_add("*TCombobox*Listbox.selectBackground", COLOR_ACENTO)
+    ventana.option_add("*TCombobox*Listbox.selectForeground", COLOR_SOBRE_ACENTO)
+
+
+class VentanaBase(tk.Toplevel):
+    """Base de las ventanas auxiliares: ícono y título, subtítulo, cuerpo, botonera, Escape y ubicación.
+
+    Se llena `self.cuerpo`, se agregan botones con `self.boton(...)` (a la derecha, el primero que se agrega queda
+    en el extremo) y al final se llama a `self.colocar()`, que la deja junto a la barra y dentro de la pantalla.
+    """
+
+    ANCHO = 440          # ancho de referencia (a escala 100 %) para el ajuste de línea de los textos
+
+    def __init__(self, maestra, titulo: str, subtitulo: str = "", icono: str = "",
+                 titulo_ventana: str | None = None):
+        super().__init__(maestra)
+        self.maestra = maestra
+        self.escala = getattr(maestra, "escala", None) or self.winfo_fpixels("1i") / 96.0
+        self.title(titulo_ventana or titulo)
+        self.configure(bg=COLOR_FONDO)
+        self.attributes("-topmost", True)
+        self.resizable(False, False)
+        estilo_combos(self)
+        cabecera = tk.Frame(self, bg=COLOR_FONDO)
+        cabecera.pack(fill="x", padx=18, pady=(16, 2))
+        if icono:
+            tk.Label(cabecera, text=icono, bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                     font=letra(16, familia="Segoe UI Emoji")).pack(side="left", padx=(0, 8), anchor="n")
+        self.etiqueta_titulo = tk.Label(cabecera, text=titulo, bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                                        font=letra(13, "bold"), anchor="w", justify="left",
+                                        wraplength=self.ancho_texto() - 40)
+        self.etiqueta_titulo.pack(side="left", fill="x", expand=True)
+        self.subtitulo = tk.Label(self, text=subtitulo, bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
+                                  anchor="w", justify="left", wraplength=self.ancho_texto())
+        self.subtitulo.pack(fill="x", padx=18, pady=(0, 8))
+        self.cuerpo = tk.Frame(self, bg=COLOR_FONDO)
+        self.cuerpo.pack(fill="x", padx=18)
+        self.botonera = tk.Frame(self, bg=COLOR_FONDO)
+        self.botonera.pack(fill="x", padx=18, pady=(12, 16))
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+    def ancho_texto(self) -> int:
+        return int((self.ANCHO - 36) * self.escala)
+
+    def boton(self, texto: str, accion, principal: bool = False) -> tk.Label:
+        b = boton_texto(self.botonera, texto, accion, principal)
+        b.pack(side="right", padx=(8, 0))
+        return b
+
+    def limpiar_botones(self) -> None:
+        for hijo in self.botonera.winfo_children():
+            hijo.destroy()
+
+    def colocar(self, y_preferida: int | None = None) -> None:
+        colocar_junto_a_la_barra(self, self.maestra, y_preferida)
+
+    def en_segundo_plano(self, trabajo, al_terminar) -> None:
+        en_segundo_plano(self, trabajo, al_terminar)
+
+
+def en_segundo_plano(widget, trabajo, al_terminar) -> None:
+    """Corre `trabajo()` en otro hilo sin congelar la ventana y, al terminar, llama `al_terminar(resultado, error)` en
+    el hilo de `widget`: Tk no se puede tocar desde otro hilo, así que aquí se revisa cada 0,1 s. Si la ventana se cerró
+    entretanto, no se llama."""
+    caja: dict = {}
+
+    def correr() -> None:
+        try:
+            caja["resultado"] = trabajo()
+        except Exception as exc:  # noqa: BLE001  (el error se entrega a quien llamó)
+            caja["error"] = exc
+        caja["listo"] = True
+
+    def revisar() -> None:
+        try:
+            if not widget.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        if caja.get("listo"):
+            al_terminar(caja.get("resultado"), caja.get("error"))
+        else:
+            widget.after(100, revisar)
+    threading.Thread(target=correr, daemon=True).start()
+    widget.after(100, revisar)
+
+
+class Pestanas(tk.Frame):
+    """Fila de pestañas con su contenido debajo: elegir una llama a su función para llenar el panel."""
+
+    def __init__(self, padre, pestanas: list[tuple[str, object]], inicial: str | None = None,
+                 vertical: bool = False):
+        super().__init__(padre, bg=COLOR_FONDO)
+        fila = tk.Frame(self, bg=COLOR_FONDO)
+        if vertical:          # pestañas a la izquierda: caben muchas sin ensanchar la ventana
+            fila.pack(side="left", fill="y")
+            tk.Frame(self, bg=COLOR_SUAVE, width=1).pack(side="left", fill="y", padx=(0, 14))
+            self.panel = tk.Frame(self, bg=COLOR_FONDO)
+            self.panel.pack(side="left", fill="both", expand=True)
+        else:
+            fila.pack(fill="x")
+            tk.Frame(self, bg=COLOR_SUAVE, height=1).pack(fill="x")
+            self.panel = tk.Frame(self, bg=COLOR_FONDO)
+            self.panel.pack(fill="both", expand=True, pady=(12, 0))
+        self.pestanas: dict[str, tuple[tk.Label, object]] = {}
+        for nombre, llenar in pestanas:
+            etiqueta = tk.Label(fila, text=nombre, bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(10, "bold"),
+                                padx=10, pady=6, cursor="hand2", takefocus=True, highlightthickness=1,
+                                highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO, anchor="w")
+            etiqueta.pack(side="top" if vertical else "left", fill="x" if vertical else None)
+            etiqueta.bind("<Button-1>", lambda _e, n=nombre: self.elegir(n))
+            for tecla in ("<Return>", "<space>"):
+                etiqueta.bind(tecla, lambda _e, n=nombre: (self.elegir(n), "break")[1])
+            self.pestanas[nombre] = (etiqueta, llenar)
+        self.actual = ""
+        self.elegir(inicial if inicial in self.pestanas else pestanas[0][0])
+
+    def elegir(self, nombre: str) -> None:
+        for otro, (etiqueta, _llenar) in self.pestanas.items():
+            elegida = otro == nombre
+            etiqueta.configure(fg=COLOR_ACENTO if elegida else COLOR_TENUE, bg=COLOR_BOTON if elegida else COLOR_FONDO)
+        for hijo in self.panel.winfo_children():
+            hijo.destroy()
+        self.actual = nombre
+        self.pestanas[nombre][1](self.panel)
+        ventana = self.winfo_toplevel()       # otro contenido, otro tamaño: que siga dentro de la pantalla
+        if hasattr(ventana, "colocar") and ventana.winfo_ismapped():
+            ventana.after_idle(lambda: ventana.colocar(ventana.winfo_y()))
 
 
 class Consola(tk.Toplevel):
@@ -725,8 +1019,9 @@ class Consola(tk.Toplevel):
     ALTO_DETALLE = 500
 
     def __init__(self, maestra, titulo: str, comando: list[str],
-                 carpeta: str | None = None, icono: str = ""):
+                 carpeta: str | None = None, icono: str = "", al_terminar=None):
         super().__init__(maestra)
+        self.al_terminar = al_terminar           # se llama con el resultado cuando el script termina
         self.title(titulo)
         self.configure(bg=COLOR_FONDO)
         self.geometry(f"{self.ANCHO_VENTANA}x{self.ALTO_COMPACTO}")
@@ -754,7 +1049,7 @@ class Consola(tk.Toplevel):
         self.duracion = 0.0
         self.detalle_visible = False
 
-        fuente = tkfont.Font(family="Segoe UI", size=10)
+        fuente = tkfont.Font(family="Segoe UI", size=tema.tamano_letra(10, ESCALA_LETRA))
         familia = fuente.cget("family")
 
         # El pie se empaqueta primero: así los botones siempre tienen su lugar,
@@ -766,11 +1061,11 @@ class Consola(tk.Toplevel):
         cabecera.pack(fill="x", padx=16, pady=(14, 6))
         if icono:
             tk.Label(cabecera, text=icono, bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                     font=("Segoe UI Emoji", 16)).pack(side="left", padx=(0, 8))
+                     font=letra(16, familia="Segoe UI Emoji")).pack(side="left", padx=(0, 8))
         tk.Label(cabecera, text=titulo, bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(familia, 13, "bold")).pack(side="left")
+                 font=letra(13, "bold")).pack(side="left")
         self.chip = tk.Label(cabecera, text="", bg=COLOR_BOTON, fg=COLOR_ACENTO,
-                             font=(familia, 9, "bold"), padx=10, pady=3)
+                             font=letra(9, "bold"), padx=10, pady=3)
         self.chip.pack(side="right")
 
         self.barra_carga = tk.Canvas(self, height=10, bg=COLOR_BOTON, bd=0,
@@ -778,14 +1073,14 @@ class Consola(tk.Toplevel):
         self.barra_carga.pack(fill="x", padx=16, pady=(2, 6))
 
         self.linea_estado = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                                     font=(familia, 9), anchor="w", justify="left")
+                                     font=letra(9), anchor="w", justify="left")
         self.linea_estado.pack(fill="x", padx=16)
         self.resumen = tk.Label(self, text="Empezando…", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                                font=(familia, 11, "bold"), anchor="w", justify="left",
+                                font=letra(11, "bold"), anchor="w", justify="left",
                                 wraplength=self.ANCHO_VENTANA - 40)
         self.resumen.pack(fill="x", padx=16, pady=(4, 0))
         self.pista = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                              font=(familia, 9), anchor="w", justify="left",
+                              font=letra(9), anchor="w", justify="left",
                               wraplength=self.ANCHO_VENTANA - 40)
         self.pista.pack(fill="x", padx=16, pady=(2, 0))
 
@@ -793,30 +1088,30 @@ class Consola(tk.Toplevel):
         # aparece si la herramienta informó ítems.
         self.marco_resultado = tk.Frame(self, bg=COLOR_BOTON)
         self.texto_resultado = tk.Text(self.marco_resultado, bg=COLOR_BOTON, fg=COLOR_TEXTO, bd=0,
-                                       font=(familia, 10), wrap="word", padx=12, pady=8,
+                                       font=letra(10), wrap="word", padx=12, pady=8,
                                        height=11, cursor="arrow", state="disabled",
                                        highlightthickness=0)
-        scroll_res = tk.Scrollbar(self.marco_resultado, command=self.texto_resultado.yview)
+        scroll_res = BarraOscura(self.marco_resultado, command=self.texto_resultado.yview)
         self.texto_resultado.configure(yscrollcommand=scroll_res.set)
         scroll_res.pack(side="right", fill="y")
         self.texto_resultado.pack(side="left", fill="both", expand=True)
         for etiqueta, opciones in {
-                "resumen": {"foreground": COLOR_TEXTO, "font": (familia, 11, "bold"),
+                "resumen": {"foreground": COLOR_TEXTO, "font": letra(11, "bold"),
                             "spacing3": 6},
-                "titulo_ok": {"foreground": "#6fd18c", "font": (familia, 10, "bold"),
+                "titulo_ok": {"foreground": COLOR_OK, "font": letra(10, "bold"),
                               "spacing1": 8},
-                "titulo_aviso": {"foreground": "#f0c775", "font": (familia, 10, "bold"),
+                "titulo_aviso": {"foreground": COLOR_AVISO, "font": letra(10, "bold"),
                                  "spacing1": 8},
-                "titulo_gris": {"foreground": COLOR_TENUE, "font": (familia, 10, "bold"),
+                "titulo_gris": {"foreground": COLOR_TENUE, "font": letra(10, "bold"),
                                 "spacing1": 8},
                 "item": {"foreground": COLOR_TEXTO, "lmargin1": 14, "lmargin2": 14},
                 "detalle": {"foreground": COLOR_TENUE, "lmargin1": 28, "lmargin2": 28},
-                "hacer": {"foreground": "#f0c775", "lmargin1": 28, "lmargin2": 28},
+                "hacer": {"foreground": COLOR_AVISO, "lmargin1": 28, "lmargin2": 28},
                 "vacio": {"foreground": COLOR_TENUE}}.items():
             self.texto_resultado.tag_configure(etiqueta, **opciones)
 
         self.alternador = tk.Label(self, text="▸ Ver detalles", bg=COLOR_FONDO,
-                                   fg=COLOR_ACENTO, font=(familia, 9), cursor="hand2",
+                                   fg=COLOR_ACENTO, font=letra(9), cursor="hand2",
                                    anchor="w", takefocus=True)
         self.alternador.pack(fill="x", padx=16, pady=(8, 2))
         self.alternador.bind("<Button-1>", lambda _e: self._alternar_detalle())
@@ -824,15 +1119,15 @@ class Consola(tk.Toplevel):
             self.alternador.bind(tecla, lambda _e: self._alternar_detalle())
 
         self.marco_detalle = tk.Frame(self, bg=COLOR_BOTON)
-        self.texto = tk.Text(self.marco_detalle, bg="#120e1f", fg="#e9e4ff", bd=0,
-                             font=("Consolas", 9), wrap="word", padx=10, pady=8,
-                             insertbackground="#e9e4ff")
-        scroll = tk.Scrollbar(self.marco_detalle, command=self.texto.yview)
+        self.texto = tk.Text(self.marco_detalle, bg=COLOR_CONSOLA, fg=COLOR_CONSOLA_TEXTO, bd=0,
+                             font=letra(9, familia="Consolas"), wrap="word", padx=10, pady=8,
+                             insertbackground=COLOR_CONSOLA_TEXTO)
+        scroll = BarraOscura(self.marco_detalle, command=self.texto.yview)
         self.texto.configure(yscrollcommand=scroll.set, state="disabled")
         scroll.pack(side="right", fill="y")
         self.texto.pack(side="left", fill="both", expand=True)
-        self.texto.tag_configure("ok", foreground="#86e6a8")
-        self.texto.tag_configure("aviso", foreground="#f0c775")
+        self.texto.tag_configure("ok", foreground=COLOR_OK)
+        self.texto.tag_configure("aviso", foreground=COLOR_AVISO)
         self.texto.tag_configure("error", foreground=COLOR_ERROR)
 
         self.botones: dict[str, tk.Label] = {}
@@ -850,7 +1145,7 @@ class Consola(tk.Toplevel):
     def _boton(self, clave: str, texto: str, accion, principal: bool = False) -> tk.Label:
         b = tk.Label(self.pie, text=f"  {texto}  ", font=self._fuente_boton, cursor="hand2",
                      bg=COLOR_ACENTO if principal else COLOR_BOTON,
-                     fg=COLOR_FONDO if principal else COLOR_TEXTO, pady=5, takefocus=True,
+                     fg=COLOR_SOBRE_ACENTO if principal else COLOR_TEXTO, pady=5, takefocus=True,
                      highlightthickness=1, highlightbackground=COLOR_BOTON,
                      highlightcolor=COLOR_ACENTO)
         normal = COLOR_ACENTO if principal else COLOR_BOTON
@@ -1100,6 +1395,11 @@ class Consola(tk.Toplevel):
                 aviso(self, {**self.resultado, "duracion": self.duracion})
             except tk.TclError:
                 pass
+        if self.al_terminar is not None:
+            try:
+                self.al_terminar(self.resultado)
+            except Exception:  # noqa: BLE001  (lo que haga quien llamó no debe dejar la ventana a medias)
+                registrar("fallo al avisar el fin de una actividad", traceback.format_exc())
         if self._cerrada:
             return
         self.resumen.configure(text=self.resultado["resumen"])
@@ -1123,7 +1423,7 @@ class Consola(tk.Toplevel):
         self._dibujar_barra()
 
 
-class VentanaPreguntar(tk.Toplevel):
+class VentanaPreguntar(VentanaBase):
     """Pide un dato y después abre la herramienta en una consola de verdad.
 
     La ventanita de la barra solo muestra lo que el script escribe; no deja
@@ -1131,56 +1431,34 @@ class VentanaPreguntar(tk.Toplevel):
     qué curso asignar cada unidad) se lanza en una consola donde sí se puede.
     """
 
+    ANCHO = 360
+
     def __init__(self, maestra, titulo: str, herramienta: dict):
-        super().__init__(maestra)
+        super().__init__(maestra, titulo, herramienta.get("pregunta", ""), herramienta.get("icono", ""),
+                         titulo_ventana=titulo)
         self.herramienta = herramienta
-        self.title(titulo)
-        self.configure(bg=COLOR_FONDO)
-        self.attributes("-topmost", True)
-        self.resizable(False, False)
-        fuente = tkfont.Font(family="Segoe UI", size=10)
-
-        tk.Label(self, text=titulo, bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(fuente.cget("family"), 12, "bold"), anchor="w"
-                 ).pack(fill="x", padx=16, pady=(14, 2))
-        tk.Label(self, text=herramienta.get("pregunta", ""), bg=COLOR_FONDO,
-                 fg=COLOR_TENUE, font=(fuente.cget("family"), 8), anchor="w",
-                 justify="left", wraplength=300).pack(fill="x", padx=16, pady=(0, 8))
-
-        self.opciones = herramienta.get("opciones") or []
-        self.elegida = tk.StringVar(value=(self.opciones[0]["valor"]
-                                           if self.opciones else ""))
+        self.opciones = opciones_de_pregunta(herramienta.get("opciones"))   # "meses": se calculan, no van escritos a mano
+        self.elegida = tk.StringVar(value=(self.opciones[0]["valor"] if self.opciones else ""))
+        marco = tk.Frame(self.cuerpo, bg=COLOR_BOTON)
+        marco.pack(fill="x")
         for o in self.opciones:
-            tk.Radiobutton(self, text=o["texto"], value=o["valor"], variable=self.elegida,
-                           bg=COLOR_FONDO, fg=COLOR_TEXTO, selectcolor=COLOR_BOTON,
-                           activebackground=COLOR_FONDO, activeforeground=COLOR_ACENTO,
-                           font=fuente, anchor="w", bd=0, highlightthickness=0
-                           ).pack(fill="x", padx=22)
+            tk.Radiobutton(marco, text=o["texto"], value=o["valor"], variable=self.elegida,
+                           bg=COLOR_BOTON, fg=COLOR_TEXTO, selectcolor=COLOR_FONDO,
+                           activebackground=COLOR_BOTON, activeforeground=COLOR_ACENTO,
+                           font=letra(10), anchor="w", bd=0, highlightthickness=0
+                           ).pack(fill="x", padx=14, pady=(6, 0))
+        tk.Frame(marco, bg=COLOR_BOTON, height=8).pack()
 
         self.libre = None
         if herramienta.get("escribir"):
-            marco = tk.Frame(self, bg=COLOR_BOTON)
-            marco.pack(fill="x", padx=16, pady=(8, 2))
-            self.libre = tk.Entry(marco, bg=COLOR_BOTON, fg=COLOR_TEXTO, bd=0,
-                                  font=fuente, insertbackground=COLOR_TEXTO,
-                                  highlightthickness=0)
-            self.libre.pack(fill="x", padx=8, pady=7)
+            self.libre = tk.Entry(self.cuerpo, font=letra(10))
+            estilo_campo(self.libre)
+            self.libre.pack(fill="x", pady=(8, 2), ipady=4)
             self.libre.bind("<Return>", lambda _e: self._lanzar())
 
-        pie = tk.Frame(self, bg=COLOR_FONDO)
-        pie.pack(fill="x", padx=16, pady=(10, 14))
-        for texto, accion, lado in (("Continuar", self._lanzar, "left"),
-                                    ("Cancelar", self.destroy, "right")):
-            b = tk.Label(pie, text=f"   {texto}   ", bg=COLOR_BOTON, fg=COLOR_TEXTO,
-                         font=fuente, cursor="hand2", pady=5)
-            b.pack(side=lado)
-            b.bind("<Button-1>", lambda _e, a=accion: a())
-            b.bind("<Enter>", lambda _e, w=b: w.configure(bg=COLOR_HOVER))
-            b.bind("<Leave>", lambda _e, w=b: w.configure(bg=COLOR_BOTON))
-
-        self.update_idletasks()
-        x = maestra.winfo_x() - self.winfo_reqwidth() - 12
-        self.geometry(f"+{max(20, x)}+{max(20, maestra.winfo_y() + 40)}")
+        self.boton("Continuar", self._lanzar, principal=True)
+        self.boton("Cancelar", self.destroy)
+        self.colocar()
 
     def _lanzar(self) -> None:
         valor = (self.libre.get().strip() if self.libre and self.libre.get().strip()
@@ -1201,151 +1479,304 @@ class VentanaPreguntar(tk.Toplevel):
         self.destroy()
 
 
-class VentanaColores(tk.Toplevel):
+def llenar_colores(padre: tk.Misc, al_elegir) -> None:
+    """Las paletas para elegir, con una muestra de cada una (la ventana de colores y Ajustes → Apariencia)."""
+    for clave, p in PALETAS.items():
+        activa = clave == PALETA
+        fila = tk.Frame(padre, bg=p["boton"], cursor="hand2", takefocus=True, highlightthickness=2,
+                        highlightbackground=p["acento"] if activa else p["boton"], highlightcolor=p["acento"])
+        fila.pack(fill="x", pady=3)
+        # Una muestra de los colores de esa paleta, para verla antes de elegir.
+        muestra = tk.Frame(fila, bg=p["boton"])
+        muestra.pack(side="left", padx=(8, 10), pady=8)
+        for color in (p["fondo"], p["acento"], p["lengueta"], p["hover"]):
+            tk.Frame(muestra, bg=color, width=14, height=14).pack(side="left", padx=1)
+        tk.Label(fila, text=("● " if activa else "") + p["nombre"], bg=p["boton"],
+                 fg=p["texto"], font=letra(10), anchor="w").pack(side="left", pady=8)
+        for widget in (fila, *fila.winfo_children(), *muestra.winfo_children()):
+            widget.bind("<Button-1>", lambda _e, c=clave: al_elegir(c))
+        for tecla in ("<Return>", "<space>"):
+            fila.bind(tecla, lambda _e, c=clave: (al_elegir(c), "break")[1])
+
+
+def llenar_docentes(padre: tk.Misc, al_elegir) -> None:
+    """Los docentes registrados en este equipo (la ventana de profesores y Ajustes → Profesor)."""
+    for clave, nombre in DOCENTES:
+        activo = clave == PERFIL
+        fila = tk.Label(padre, text=f"   {'●' if activo else '○'}  {nombre}   ",
+                        bg=COLOR_ACENTO if activo else COLOR_BOTON,
+                        fg=COLOR_SOBRE_ACENTO if activo else COLOR_TEXTO,
+                        font=letra(10), anchor="w", cursor="hand2", pady=7, takefocus=not activo,
+                        highlightthickness=1, highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
+        fila.pack(fill="x", pady=2)
+        if not activo:
+            fila.bind("<Button-1>", lambda _e, c=clave: al_elegir(c))
+            for tecla in ("<Return>", "<space>"):
+                fila.bind(tecla, lambda _e, c=clave: (al_elegir(c), "break")[1])
+            fila.bind("<Enter>", lambda _e, f=fila: f.configure(bg=COLOR_HOVER))
+            fila.bind("<Leave>", lambda _e, f=fila: f.configure(bg=COLOR_BOTON))
+
+
+def elegir_docente(clave: str, barra=None) -> None:
+    """Cambia el docente activo: en vivo si se conoce la barra; si no, reabriéndola."""
+    if barra is not None and getattr(barra, "corriendo", None):
+        tareas = ", ".join(f"«{n}»" for n in barra.corriendo)
+        messagebox.showinfo("Barra Profe", f"Espera a que termine {tareas} antes de cambiar de profesor.")
+        return
+    try:
+        rutas.fijar_perfil_activo(clave)
+    except OSError as exc:
+        messagebox.showerror("Barra Profe", f"No pude cambiar de profesor.\n\n{exc}")
+        return
+    registrar(f"docente activo: {clave}")
+    if barra is None:
+        reabrir_barra(desbloqueado=clave)
+        return
+    barra.cambiar_docente(clave)
+
+
+def entrar_como_docente(clave: str, barra=None) -> None:
+    """Pasa la barra a ese profesor. En un equipo con varios, primero su PIN (si no tiene o lo olvidó, su contraseña
+    de Webclass): así nadie entra por error a la cuenta de otro."""
+    if not equipo_compartido():
+        elegir_docente(clave, barra)
+        return
+    entrar = barra.entrar_como if hasattr(barra, "entrar_como") else (lambda c: elegir_docente(c, barra))
+    VentanaPin(barra, clave, entrar)
+
+
+class VentanaColores(VentanaBase):
     """Muestra las paletas para elegir, con una muestra de cada una."""
 
+    ANCHO = 300
+
     def __init__(self, maestra):
-        super().__init__(maestra)
-        self.title("Color de la barra")
-        self.configure(bg=COLOR_FONDO)
-        self.attributes("-topmost", True)
-        self.resizable(False, False)
-        fuente = tkfont.Font(family="Segoe UI", size=10)
-
-        tk.Label(self, text="Elige el color", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(fuente.cget("family"), 12, "bold"), anchor="w"
-                 ).pack(fill="x", padx=16, pady=(14, 2))
-        tk.Label(self, text=f"Queda guardado para {NOMBRE or 'este perfil'}.",
-                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=(fuente.cget("family"), 8),
-                 anchor="w").pack(fill="x", padx=16, pady=(0, 10))
-
-        for clave, p in PALETAS.items():
-            activa = clave == PALETA
-            fila = tk.Frame(self, bg=p["boton"], cursor="hand2",
-                            highlightthickness=2,
-                            highlightbackground=p["acento"] if activa else p["boton"],
-                            highlightcolor=p["acento"] if activa else p["boton"])
-            fila.pack(fill="x", padx=16, pady=3)
-            # Una muestra de los colores de esa paleta, para verla antes de elegir.
-            muestra = tk.Frame(fila, bg=p["boton"])
-            muestra.pack(side="left", padx=(8, 10), pady=8)
-            for color in (p["fondo"], p["acento"], p["lengueta"], p["hover"]):
-                tk.Frame(muestra, bg=color, width=14, height=14).pack(side="left", padx=1)
-            tk.Label(fila, text=("● " if activa else "") + p["nombre"], bg=p["boton"],
-                     fg=p["texto"], font=fuente, anchor="w").pack(side="left", pady=8)
-            for widget in (fila, *fila.winfo_children()):
-                widget.bind("<Button-1>", lambda _e, c=clave: self._elegir(c))
-                for hijo in widget.winfo_children():
-                    hijo.bind("<Button-1>", lambda _e, c=clave: self._elegir(c))
-
-        cerrar = tk.Label(self, text="   Cerrar   ", bg=COLOR_BOTON, fg=COLOR_TEXTO,
-                          font=fuente, cursor="hand2", pady=5)
-        cerrar.pack(pady=(10, 14))
-        cerrar.bind("<Button-1>", lambda _e: self.destroy())
-
-        self.update_idletasks()
-        x = maestra.winfo_x() - self.winfo_reqwidth() - 12
-        self.geometry(f"+{max(20, x)}+{max(20, maestra.winfo_y() + 40)}")
+        super().__init__(maestra, "Elige el color", f"Queda guardado para {NOMBRE or 'este perfil'}.",
+                         titulo_ventana="Color de la barra")
+        llenar_colores(self.cuerpo, self._elegir)
+        self.boton("Cerrar", self.destroy)
+        self.colocar()
 
     def _elegir(self, clave: str) -> None:
         if clave == PALETA:
             self.destroy()
             return
-        guardar_color(clave)
+        guardar_color(clave, self.maestra)
 
 
-class VentanaDocentes(tk.Toplevel):
+class VentanaDocentes(VentanaBase):
     """Cambia entre los docentes registrados en este equipo."""
 
+    ANCHO = 320
+
     def __init__(self, maestra):
-        super().__init__(maestra)
-        self.title("Cambiar de profesor")
-        self.configure(bg=COLOR_FONDO)
-        self.attributes("-topmost", True)
-        self.resizable(False, False)
-        fuente = tkfont.Font(family="Segoe UI", size=10)
-
-        tk.Label(self, text="¿Quién va a usar la barra?", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(fuente.cget("family"), 12, "bold"), anchor="w"
-                 ).pack(fill="x", padx=16, pady=(14, 2))
-        tk.Label(self, text="Se cambian los cursos, el libro y la lista de pendientes.",
-                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=(fuente.cget("family"), 8),
-                 anchor="w", justify="left").pack(fill="x", padx=16, pady=(0, 10))
-
-        for clave, nombre in DOCENTES:
-            activo = clave == PERFIL
-            fila = tk.Label(self, text=f"   {'●' if activo else '○'}  {nombre}   ",
-                            bg=COLOR_ACENTO if activo else COLOR_BOTON,
-                            fg=COLOR_FONDO if activo else COLOR_TEXTO,
-                            font=fuente, anchor="w", cursor="hand2", pady=7)
-            fila.pack(fill="x", padx=16, pady=2)
-            if not activo:
-                fila.bind("<Button-1>", lambda _e, c=clave: self._elegir(c))
-                fila.bind("<Enter>", lambda _e, f=fila: f.configure(bg=COLOR_HOVER))
-                fila.bind("<Leave>", lambda _e, f=fila: f.configure(bg=COLOR_BOTON))
-
-        cerrar = tk.Label(self, text="   Cerrar   ", bg=COLOR_BOTON, fg=COLOR_TEXTO,
-                          font=fuente, cursor="hand2", pady=5)
-        cerrar.pack(pady=(10, 14))
-        cerrar.bind("<Button-1>", lambda _e: self.destroy())
-
-        self.update_idletasks()
-        x = maestra.winfo_x() - self.winfo_reqwidth() - 12
-        self.geometry(f"+{max(20, x)}+{max(20, maestra.winfo_y() + 40)}")
+        super().__init__(maestra, "¿Quién va a usar la barra?",
+                         "Se cambian los cursos, el libro y la lista de pendientes."
+                         + (" Cada profesor entra con su PIN." if equipo_compartido() else ""),
+                         titulo_ventana="Cambiar de profesor")
+        llenar_docentes(self.cuerpo, self._elegir)
+        self.boton("Cerrar", self.destroy)
+        self.colocar()
 
     def _elegir(self, clave: str) -> None:
+        entrar_como_docente(clave, self.maestra)
+
+
+class VentanaPin(VentanaBase):
+    """El PIN de 4 números de un profesor en un equipo compartido (para no usar por error la barra de otro).
+
+    Si todavía no tiene PIN, o lo olvidó, entra con su contraseña de Webclass y crea uno. Cuando el PIN (o la
+    contraseña y el PIN nuevo) está bien se llama `al_entrar(clave)`. modo: «entrar» (por omisión), «cambiar» (pide
+    el actual y luego uno nuevo) o «crear» (directo a crear uno, p. ej. recién configurada la cuenta).
+    """
+
+    ANCHO = 360
+
+    def __init__(self, maestra, clave: str, al_entrar=None, modo: str = "entrar"):
+        self.clave, self.al_entrar, self.modo = clave, al_entrar, modo
+        self.nombre = next((n for c, n in docentes_registrados() if c == clave), clave)
+        super().__init__(maestra, self.nombre, "", icono="🔒", titulo_ventana="PIN de la barra")
+        self.ruta = ruta_pin(rutas.PERSONAL, clave)
+        self.rut = str(_leer_json(os.path.join(rutas.PERFILES, f"{clave}.json"), {}).get("rut") or "")
+        self.fallos = 0
+        self._comprobando = False
+        if modo == "crear":
+            self._paso_crear()
+        elif tiene_pin(self.ruta):
+            self._paso_pin()
+        else:
+            self._paso_webclass("Este equipo lo usan varios profesores: crea tu PIN. Primero entra con tu contraseña "
+                                "de Webclass.")
+        self.colocar()
+        self.lift()
         try:
-            rutas.fijar_perfil_activo(clave)
-        except OSError as exc:
-            messagebox.showerror("Barra Profe", f"No pude cambiar de profesor.\n\n{exc}")
+            self.focus_force()
+        except tk.TclError:
+            pass
+
+    def _limpiar(self) -> None:
+        for hijo in self.cuerpo.winfo_children():
+            hijo.destroy()
+        self.limpiar_botones()
+
+    def _etiqueta(self, texto: str) -> None:
+        tk.Label(self.cuerpo, text=texto, bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10, "bold"),
+                 anchor="w").pack(fill="x", pady=(8, 2))
+
+    def _campo_pin(self, texto: str) -> tk.Entry:
+        self._etiqueta(texto)
+        solo_numeros = (self.register(lambda nuevo: nuevo == "" or (nuevo.isdigit() and len(nuevo) <= 4)), "%P")
+        campo = tk.Entry(self.cuerpo, font=letra(18, "bold"), show="●", justify="center", width=6, validate="key",
+                         validatecommand=solo_numeros)
+        estilo_campo(campo)
+        campo.pack(anchor="w", ipady=4)
+        return campo
+
+    def _poner_aviso(self) -> None:
+        self.aviso = tk.Label(self.cuerpo, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=letra(9), anchor="w",
+                              justify="left", wraplength=self.ancho_texto())
+        self.aviso.pack(fill="x", pady=(8, 0))
+
+    def _avisar(self, texto: str, error: bool = True) -> None:
+        self.aviso.configure(text=texto, fg=COLOR_ERROR if error else COLOR_TENUE)
+
+    # ── 1. El PIN de siempre ──
+    def _paso_pin(self) -> None:
+        self._limpiar()
+        self.subtitulo.configure(text="Escribe tu PIN actual." if self.modo == "cambiar" else "Escribe tu PIN para usar la barra.")
+        self.campo = self._campo_pin("PIN")
+        self.campo.bind("<KeyRelease>", lambda e: (len(self.campo.get()) == 4 and e.keysym not in ("Return", "KP_Enter")
+                                                   and self._revisar_pin()))
+        self.campo.bind("<Return>", lambda _e: self._revisar_pin())
+        self._poner_aviso()
+        olvido = tk.Label(self.cuerpo, text="¿Olvidaste tu PIN? Entra con tu contraseña de Webclass", bg=COLOR_FONDO,
+                          fg=COLOR_ACENTO, font=letra(9, "underline"), anchor="w", cursor="hand2", takefocus=True)
+        olvido.pack(fill="x", pady=(10, 0))
+        for evento in ("<Button-1>", "<Return>"):
+            olvido.bind(evento, lambda _e: self._paso_webclass("Entra con tu contraseña de Webclass y crea un PIN nuevo."))
+        self.boton("Entrar", self._revisar_pin, principal=True)
+        self.boton("Cancelar", self.destroy)
+        self.campo.focus_set()
+
+    def _revisar_pin(self) -> None:
+        pin = self.campo.get()
+        if not PIN_VALIDO.fullmatch(pin):
+            self._avisar("El PIN son 4 números.")
             return
-        registrar(f"docente activo: {clave}")
-        reabrir_barra()
+        if pin_correcto(self.ruta, pin):
+            if self.modo == "cambiar":
+                self._paso_crear()
+            else:
+                self._listo()
+            return
+        self.fallos += 1
+        self.campo.delete(0, "end")
+        self._avisar("PIN incorrecto." + (" Si no lo recuerdas, entra con tu contraseña de Webclass." if self.fallos >= 3 else ""))
+
+    # ── 2. Sin PIN o si se olvidó: la contraseña de Webclass ──
+    def _paso_webclass(self, explicacion: str) -> None:
+        self._limpiar()
+        self.subtitulo.configure(text=explicacion)
+        if not self.rut:
+            self._poner_aviso()
+            self._avisar("Este profesor no tiene su RUT guardado: vuelve a configurar su cuenta en ⚙ Ajustes → Profesor.")
+            self.boton("Cerrar", self.destroy)
+            return
+        tk.Label(self.cuerpo, text=f"RUT {self.rut}", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
+                 anchor="w").pack(fill="x")
+        self._etiqueta("Contraseña de Webclass")
+        self.contrasena = tk.StringVar()
+        campo = tk.Entry(self.cuerpo, textvariable=self.contrasena, font=letra(10), show="•")
+        estilo_campo(campo)
+        campo.pack(fill="x", ipady=4)
+        campo.bind("<Return>", lambda _e: self._revisar_webclass())
+        self._poner_aviso()
+        self.boton("Continuar", self._revisar_webclass, principal=True)
+        self.boton("Cancelar", self.destroy)
+        campo.focus_set()
+
+    def _revisar_webclass(self) -> None:
+        if self._comprobando:
+            return
+        contrasena = self.contrasena.get()
+        if not contrasena:
+            self._avisar("Escribe tu contraseña de Webclass.")
+            return
+        self._comprobando = True
+        self._avisar("Comprobando…", error=False)
+        rut = self.rut
+
+        def comprobar() -> None:
+            import configurar
+            configurar.verificar_contrasena(rut, contrasena)
+        self.en_segundo_plano(comprobar, self._webclass_revisada)
+
+    def _webclass_revisada(self, _resultado, error) -> None:
+        self._comprobando = False
+        self.contrasena.set("")                       # la contraseña no queda en la ventana
+        if error is None:
+            registrar(f"PIN: {self.clave} entró con su contraseña de Webclass")
+            self._paso_crear()
+        elif isinstance(error, ValueError):
+            self._avisar(str(error))
+        else:
+            registrar("PIN: no se pudo comprobar la contraseña con Webclass", str(error))
+            self._avisar(f"No pude comprobarla con Webclass (¿hay internet?). {str(error)[:120]}")
+
+    # ── 3. Crear el PIN ──
+    def _paso_crear(self) -> None:
+        self._limpiar()
+        self.subtitulo.configure(text="Crea tu PIN: 4 números que recuerdes. La barra lo pide al abrirse y al cambiar "
+                                      "de profesor.")
+        self.nuevo = self._campo_pin("PIN nuevo")
+        self.repetido = self._campo_pin("Repítelo")
+        self.nuevo.bind("<KeyRelease>", lambda _e: len(self.nuevo.get()) == 4 and self.repetido.focus_set())
+        self.repetido.bind("<Return>", lambda _e: self._guardar())
+        self._poner_aviso()
+        self.boton("Guardar", self._guardar, principal=True)
+        self.boton("Cancelar", self.destroy)
+        self.nuevo.focus_set()
+
+    def _guardar(self) -> None:
+        pin, otra_vez = self.nuevo.get(), self.repetido.get()
+        if not PIN_VALIDO.fullmatch(pin):
+            self._avisar("El PIN son 4 números.")
+            return
+        if pin != otra_vez:
+            self.repetido.delete(0, "end")
+            self._avisar("Los dos PIN no son iguales: repítelo de nuevo.")
+            return
+        try:
+            guardar_pin(self.ruta, pin)
+        except OSError as exc:
+            self._avisar(f"No se pudo guardar el PIN: {exc}")
+            return
+        registrar(f"PIN guardado para {self.clave}")
+        self._listo()
+
+    def _listo(self) -> None:
+        al_entrar, clave = self.al_entrar, self.clave
+        self.destroy()
+        if al_entrar:
+            al_entrar(clave)
 
 
-class VentanaHorario(tk.Toplevel):
+class VentanaHorario(VentanaBase):
     """Muestra el horario de la semana como tabla: días en columnas, horas en filas."""
 
+    ANCHO = 560
+
     def __init__(self, maestra):
-        super().__init__(maestra)
-        self.title("Mi horario de la semana")
-        self.configure(bg=COLOR_FONDO)
-        self.attributes("-topmost", True)
-        self.resizable(False, False)
-        self.fuente = tkfont.Font(family="Segoe UI", size=9)
+        super().__init__(maestra, "Mi horario de la semana", "", titulo_ventana="Mi horario de la semana")
         self._generando = False
-
-        self.titulo = tk.Label(self, text="Mi horario de la semana", bg=COLOR_FONDO,
-                               fg=COLOR_TEXTO, font=(self.fuente.cget("family"), 12, "bold"),
-                               anchor="w")
-        self.titulo.pack(fill="x", padx=16, pady=(14, 0))
-        self.subtitulo = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                                  font=(self.fuente.cget("family"), 8), anchor="w")
-        self.subtitulo.pack(fill="x", padx=16, pady=(0, 8))
-
-        self.tabla = tk.Frame(self, bg=COLOR_FONDO)
-        self.tabla.pack(padx=16, pady=(0, 6))
-
-        pie = tk.Frame(self, bg=COLOR_FONDO)
-        pie.pack(fill="x", padx=16, pady=(0, 12))
-        self.boton_actualizar = self._boton(pie, "Actualizar", self._generar, "left")
-        self._boton(pie, "Cerrar", self.destroy, "right")
-
+        self.tabla = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
+        self.tabla.pack()
+        self.boton("Cerrar", self.destroy)
+        self.boton_actualizar = self.boton("Actualizar", self._generar)
         self._dibujar()
-        self.update_idletasks()
-        x = maestra.winfo_x() - self.winfo_reqwidth() - 12
-        self.geometry(f"+{max(20, x)}+{max(20, maestra.winfo_y() + 40)}")
+        self.colocar()
         if not self._hay_datos():
             self._generar()
-
-    def _boton(self, padre, texto: str, accion, lado: str) -> tk.Label:
-        b = tk.Label(padre, text=f"   {texto}   ", bg=COLOR_BOTON, fg=COLOR_TEXTO,
-                     font=self.fuente, cursor="hand2", pady=5)
-        b.pack(side=lado)
-        b.bind("<Button-1>", lambda _e: accion())
-        b.bind("<Enter>", lambda _e: b.configure(bg=COLOR_HOVER))
-        b.bind("<Leave>", lambda _e: b.configure(bg=COLOR_BOTON))
-        return b
 
     def _leer(self) -> dict:
         try:
@@ -1363,7 +1794,7 @@ class VentanaHorario(tk.Toplevel):
             return
         self._generando = True
         self.subtitulo.configure(text="Consultando Webclass…")
-        self.boton_actualizar.configure(text="   Espera…   ")
+        self.boton_actualizar.configure(text="  Espera…  ")
         try:
             proceso = subprocess.Popen(comando_webclass("horario", "--salida", HORARIO_SEMANA),
                                        cwd=WEBCLASS,
@@ -1373,19 +1804,19 @@ class VentanaHorario(tk.Toplevel):
             self._generando = False
             self.subtitulo.configure(text="No se pudo consultar Webclass")
             return
-
-        def esperar() -> None:
-            proceso.wait()
-            try:
-                self.after(0, self._termina_generar)
-            except tk.TclError:
-                pass
-        threading.Thread(target=esperar, daemon=True).start()
+        # Se espera en otro hilo, pero la ventana se actualiza desde el suyo (Tk no admite llamadas desde otros hilos)
+        self.en_segundo_plano(proceso.wait, lambda _codigo, _error: self._termina_generar())
 
     def _termina_generar(self) -> None:
         self._generando = False
-        self.boton_actualizar.configure(text="   Actualizar   ")
-        self._dibujar()
+        try:
+            self.boton_actualizar.configure(text="  Actualizar  ")
+            self._dibujar()
+        except tk.TclError:
+            pass                  # la ventana se cerró mientras se consultaba
+        refrescar = getattr(self.master, "_refrescar_agenda", None)
+        if refrescar:
+            refrescar()           # sin asistente, «Ahora / Luego» sale de este horario
 
     def _dibujar(self) -> None:
         for hijo in self.tabla.winfo_children():
@@ -1399,7 +1830,7 @@ class VentanaHorario(tk.Toplevel):
                                           f"actualizado {datos.get('generado', '')}")
         if not bloques:
             tk.Label(self.tabla, text="Sin datos todavía.", bg=COLOR_FONDO,
-                     fg=COLOR_TENUE, font=self.fuente).pack(pady=10)
+                     fg=COLOR_TENUE, font=letra(10)).pack(pady=10)
             return
 
         dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
@@ -1409,25 +1840,632 @@ class VentanaHorario(tk.Toplevel):
         tk.Label(self.tabla, text="", bg=COLOR_FONDO).grid(row=0, column=0, padx=1, pady=1)
         for c, dia in enumerate(dias, start=1):
             tk.Label(self.tabla, text=dia, bg=COLOR_FONDO, fg=COLOR_ACENTO,
-                     font=(self.fuente.cget("family"), 9, "bold"), width=11,
+                     font=letra(9, "bold"), width=11,
                      pady=4).grid(row=0, column=c, padx=1, pady=1)
 
         for f, (inicio, fin) in enumerate(horas, start=1):
             tk.Label(self.tabla, text=f"{inicio}\n{fin}", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                     font=(self.fuente.cget("family"), 8), justify="right",
+                     font=letra(9), justify="right",
                      padx=6).grid(row=f, column=0, sticky="e")
             for c, _dia in enumerate(dias):
                 b = celdas.get((c, inicio))
                 if b:
-                    texto = b["curso"]
-                    if "rientaci" in (b.get("asignatura") or ""):
-                        texto += "\nOrientación"
+                    corta = asignatura_corta(b.get("asignatura") or "")
+                    corta = corta if len(corta) <= 12 else corta[:11].rstrip() + "…"     # que quepa en la celda
+                    texto = f"{b['curso']}\n{corta}" if corta else b["curso"]
                     celda = tk.Label(self.tabla, text=texto, bg=COLOR_BOTON, fg=COLOR_TEXTO,
-                                     font=(self.fuente.cget("family"), 10, "bold"),
+                                     font=letra(10, "bold"),
                                      width=11, height=2)
                 else:
                     celda = tk.Label(self.tabla, text="", bg=COLOR_FONDO, width=11, height=2)
                 celda.grid(row=f, column=c + 1, padx=1, pady=1, sticky="nsew")
+
+
+class VentanaSinClases(VentanaBase):
+    """«Días sin clases»: feriados, salidas o vacaciones que no deben seguir apareciendo como pendientes.
+
+    Lo marcado lo respetan la tarjeta «Hoy», «Registrar libro» (y el pendiente), «Asignar clases» y el informe del mes.
+    Arriba se ofrecen los días que el libro muestra con bloques pendientes; también se escribe un día o un rango
+    (vacaciones). Abajo, lo ya marcado, con «Quitar» para deshacerlo. Desde la vista previa se marca además una
+    clase o un bloque suelto («No hubo clase ▾»): también aparecen aquí.
+    """
+
+    ANCHO = 480
+
+    def __init__(self, maestra):
+        super().__init__(maestra, "Días sin clases",
+                         "Feriados, salidas o vacaciones: lo que marques deja de aparecer como pendiente en "
+                         "el libro, en las tareas y en la tarjeta «Hoy». Se deshace cuando quieras.",
+                         icono="📆", titulo_ventana="Días sin clases")
+        self.desde, self.hasta, self.motivo = tk.StringVar(), tk.StringVar(), tk.StringVar()
+        self.elegidos: dict[str, tk.BooleanVar] = {}
+        self.zona_pendientes = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
+        self.zona_pendientes.pack(fill="x")
+
+        tk.Label(self.cuerpo, text="Un día o un rango (por ejemplo, unas vacaciones):", bg=COLOR_FONDO,
+                 fg=COLOR_TENUE, font=letra(9), anchor="w").pack(fill="x", pady=(10, 0))
+        fila = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
+        fila.pack(fill="x", pady=(4, 0))
+        tk.Label(fila, text="Desde", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10)).pack(side="left")
+        self.campo_desde = self._campo(fila, self.desde, 11)
+        tk.Label(fila, text="hasta", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10)).pack(side="left", padx=(10, 0))
+        self.campo_hasta = self._campo(fila, self.hasta, 11)
+        tk.Label(fila, text="(opcional)", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9)).pack(side="left", padx=(6, 0))
+        fila_motivo = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
+        fila_motivo.pack(fill="x", pady=(6, 0))
+        tk.Label(fila_motivo, text="Motivo", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10)).pack(side="left")
+        self.campo_motivo = self._campo(fila_motivo, self.motivo, 26)
+        tk.Label(fila_motivo, text="feriado, vacaciones…", bg=COLOR_FONDO, fg=COLOR_TENUE,
+                 font=letra(9)).pack(side="left", padx=(6, 0))
+        acciones = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
+        acciones.pack(fill="x", pady=(10, 0))
+        self.boton_marcar = boton_texto(acciones, "Marcar como sin clases", self._marcar, principal=True)
+        self.boton_marcar.pack(side="right")
+        self.aviso = tk.Label(self.cuerpo, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w",
+                              justify="left", wraplength=self.ancho_texto())
+        self.aviso.pack(fill="x", pady=(6, 0))
+        for campo in (self.campo_desde, self.campo_hasta, self.campo_motivo):
+            campo.bind("<Return>", lambda _e: self._marcar())
+
+        tk.Label(self.cuerpo, text="YA MARCADOS", bg=COLOR_FONDO, fg=COLOR_ACENTO, font=letra(9, "bold"),
+                 anchor="w").pack(fill="x", pady=(14, 4))
+        self.marcados = MarcoDesplazable(self.cuerpo, alto_max=int(200 * self.escala))
+        self.marcados.pack(fill="x")
+        self.boton("Cerrar", self.destroy)
+        self._pintar()
+        self.colocar()
+        try:
+            self.focus_force()
+        except tk.TclError:
+            pass
+
+    def _campo(self, padre, variable: tk.StringVar, ancho: int) -> tk.Entry:
+        campo = estilo_campo(tk.Entry(padre, textvariable=variable, font=letra(10), width=ancho))
+        campo.pack(side="left", padx=(6, 0), ipady=3)
+        return campo
+
+    # ------------------------------------------------------------------ contenido
+    def _pendientes(self) -> list[tuple[datetime.date, str]]:
+        """Los días que el libro muestra hoy con bloques por completar (hoy y los atrasados), sin los ya marcados."""
+        estado = aplicar_sin_clases(leer_json(ESTADO_FIRMAS), leer_sin_clases(SIN_CLASES)) or {}
+        if estado.get("error"):
+            return []
+        dias = []
+        hoy = datetime.date.today()
+        if estado.get("fecha") == hoy.strftime("%d/%m/%Y") and not estado.get("sin_clases") and hoy.weekday() < 5:
+            incompletos = [b for b in estado.get("bloques") or []
+                           if not all(b.get(k) for k in ("oa", "leccionario", "asistencia", "firma"))]
+            if incompletos:
+                cursos = sorted({str(b.get("curso", "")) for b in incompletos})
+                dias.append((hoy, f"Hoy, {DIAS_CORTOS[hoy.weekday()]} {hoy:%d/%m} · {len(incompletos)} "
+                                  f"bloque{'s' if len(incompletos) != 1 else ''} por completar ({', '.join(cursos)})"))
+        for a in estado.get("atrasados") or []:
+            dia = fecha_de_estado(a.get("fecha"))
+            if dia is None:
+                continue
+            n = int(a.get("bloques") or 0)
+            dias.append((dia, f"{DIAS_CORTOS[dia.weekday()]} {dia:%d/%m} · {n} bloque{'s' if n != 1 else ''} "
+                              f"sin registrar ({', '.join(a.get('cursos') or [])})"))
+        return dias
+
+    def _pintar(self) -> None:
+        for hijo in self.zona_pendientes.winfo_children():
+            hijo.destroy()
+        self.zona_pendientes.configure(height=1)        # sin hijos, Tk no lo achica solo y quedaba un hueco
+        self.elegidos = {}
+        pendientes = self._pendientes()
+        if pendientes:
+            tk.Label(self.zona_pendientes, text="Días que tu libro muestra con bloques pendientes. Marca los que no "
+                                                "tuvieron clases:", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
+                     anchor="w", justify="left", wraplength=self.ancho_texto()).pack(fill="x")
+            for dia, texto in pendientes:
+                variable = tk.BooleanVar(value=False)
+                self.elegidos[dia.isoformat()] = variable
+                casilla(self.zona_pendientes, texto, variable, lambda: None, self.ancho_texto() - 30)
+
+        interior = self.marcados.interior
+        for hijo in interior.winfo_children():
+            hijo.destroy()
+        datos = leer_sin_clases(SIN_CLASES)
+        filas = [(t["texto"] + (f" · {t['motivo']}" if t["motivo"] else ""), "dias", t["dias"])
+                 for t in tramos_sin_clases(datos["dias"])]
+        bloques = sorted(datos["bloques"].items(), key=lambda par: par[0].rsplit("|", 1)[-1], reverse=True)
+        filas += [(f"Solo una clase: {titulo or clave}", "bloques", [clave]) for clave, titulo in bloques]
+        filas += [(f"Solo una clase: {titulo or clave}", "clases", [clave])
+                  for clave, titulo in sorted(datos["clases"].items(), key=lambda par: par[1])]
+        if not filas:
+            tk.Label(interior, text="Todavía no marcas ningún día.", bg=COLOR_FONDO, fg=COLOR_TENUE,
+                     font=letra(10), anchor="w").pack(fill="x", pady=4)
+        for texto, campo, claves in filas:
+            fila = tk.Frame(interior, bg=COLOR_BOTON)
+            fila.pack(fill="x", pady=1)
+            quitar = tk.Label(fila, text="Quitar", bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9, "underline"),
+                              cursor="hand2", takefocus=True, highlightthickness=1, highlightbackground=COLOR_BOTON,
+                              highlightcolor=COLOR_ACENTO)
+            quitar.pack(side="right", padx=8, pady=4)
+            quitar.bind("<Button-1>", lambda _e, c=campo, k=claves, t=texto: self._quitar(c, k, t))
+            for tecla in ("<Return>", "<space>"):
+                quitar.bind(tecla, lambda _e, c=campo, k=claves, t=texto: (self._quitar(c, k, t), "break")[1])
+            tk.Label(fila, text=texto, bg=COLOR_BOTON, fg=COLOR_TEXTO, font=letra(10), anchor="w", justify="left",
+                     wraplength=self.ancho_texto() - 90).pack(side="left", fill="x", expand=True, padx=(10, 0), pady=4)
+        self.marcados.activar_rueda()
+
+    # -------------------------------------------------------------------- acciones
+    def _marcar(self) -> None:
+        dias = [fecha_iso(k) for k, variable in self.elegidos.items() if variable.get()]
+        try:
+            if self.desde.get().strip():
+                dias += dias_para_marcar(self.desde.get(), self.hasta.get())
+            elif self.hasta.get().strip():
+                raise ValueError("Escribe también el primer día («Desde»).")
+            if not dias:
+                raise ValueError("Marca un día de la lista o escribe una fecha (día/mes/año).")
+            marcar_dias_sin_clases(SIN_CLASES, dias, self.motivo.get())
+        except (ValueError, OSError) as exc:
+            self.aviso.configure(text=str(exc), fg=COLOR_ERROR)
+            return
+        dias = sorted(set(d for d in dias if d.weekday() < 5))
+        cuales = (", ".join(f"{d:%d/%m}" for d in dias) if len(dias) <= 3 else
+                  f"{len(dias)} días (del {dias[0]:%d/%m} al {dias[-1]:%d/%m})")
+        registrar(f"días sin clases: {cuales} ({self.motivo.get().strip() or 'sin motivo'})")
+        self.desde.set("")
+        self.hasta.set("")
+        self.aviso.configure(text=f"Listo: {cuales} {'queda' if len(dias) == 1 else 'quedan'} sin clases.",
+                             fg=COLOR_TENUE)
+        self._despues_de_cambiar()
+
+    def _quitar(self, campo: str, claves: list[str], texto: str) -> None:
+        try:
+            quitar_sin_clases(SIN_CLASES, campo, claves)
+        except OSError as exc:
+            self.aviso.configure(text=f"No pude quitarlo: {exc}", fg=COLOR_ERROR)
+            return
+        registrar(f"días sin clases: se quitó «{texto}»")
+        self.aviso.configure(text=f"Quitado: «{texto}». Vuelve a contar como pendiente si le falta algo.",
+                             fg=COLOR_TENUE)
+        self._despues_de_cambiar()
+
+    def _despues_de_cambiar(self) -> None:
+        self._pintar()
+        refrescar = getattr(self.maestra, "_refrescar_firmas", None)
+        if callable(refrescar):
+            refrescar()                    # la tarjeta «Hoy» se pone al día al tiro
+        self.colocar()
+
+
+class VentanaClaveColegio(VentanaBase):
+    """La clave del colegio de este PC: con ella llegan los avisos del administrador y las claves de IA del colegio.
+
+    Antes de guardarla se revisa que abra lo que el colegio publicó (si ya llegó algo): así un error de tipeo no queda
+    guardado en silencio. Va al Administrador de credenciales de Windows y sirve a todos los profes de este PC.
+    """
+
+    ANCHO = 470
+    ESTADOS = {"ok": "✓ Este PC ya tiene la clave del colegio: llegan los mensajes para ti y las claves de IA.",
+               "sin_codigo": "Este PC todavía no tiene la clave del colegio.",
+               "codigo_incorrecto": "La clave guardada no abre lo que publicó el colegio: pega la nueva.",
+               "sin_buzon": "Aún no llega nada del colegio a este PC."}
+
+    def __init__(self, maestra):
+        super().__init__(maestra, "Clave del colegio",
+                         "Te la entrega quien administra la barra en tu colegio. Los avisos para todos llegan sin ella; "
+                         "con ella llegan además los mensajes dirigidos a ti y las claves de IA del planificador. Queda "
+                         "en el Administrador de credenciales de Windows (no en un archivo) y sirve para todos los profes "
+                         "de este PC.", icono="🏫", titulo_ventana="Clave del colegio")
+        self.texto = tk.StringVar()
+        self.campo = estilo_campo(tk.Entry(self.cuerpo, textvariable=self.texto, font=letra(12), justify="center"))
+        self.campo.pack(fill="x", ipady=4)
+        self.campo.bind("<Return>", lambda _e: self._guardar())
+        estado = colegio.estado(BUZON_COLEGIO, colegio.codigo_guardado(vigencia=0))
+        self.aviso = tk.Label(self.cuerpo, text=self.ESTADOS[estado], bg=COLOR_FONDO,
+                              fg=COLOR_OK if estado == "ok" else COLOR_TENUE, font=letra(9), anchor="w", justify="left",
+                              wraplength=self.ancho_texto())
+        self.aviso.pack(fill="x", pady=(8, 0))
+        self.boton_guardar = self.boton("Guardar", self._guardar, principal=True)
+        self.boton("Cancelar", self.destroy)
+        self.colocar()
+        try:
+            self.focus_force()
+            self.campo.focus_set()
+        except tk.TclError:
+            pass
+
+    def _guardar(self) -> None:
+        codigo = colegio.normalizar_codigo(self.texto.get())
+        if not codigo:
+            self.aviso.configure(text=f"La clave del colegio son {colegio.LARGO} letras y números (como K7M2-9QXP-…). "
+                                      "Revísala.", fg=COLOR_ERROR)
+            return
+        self.aviso.configure(text="Revisando con lo que publicó el colegio…", fg=COLOR_TENUE)
+
+        def trabajo() -> str:
+            try:
+                colegio.descargar(BUZON_COLEGIO)
+            except (OSError, ValueError):
+                pass                       # sin internet (o nada publicado aún): se revisa con lo que ya había
+            paquete = colegio.leer_paquete(BUZON_COLEGIO)
+            if paquete is not None and colegio.abrir(paquete, codigo) is None:
+                return "no_abre"
+            colegio.guardar_codigo(codigo)
+            return "ok" if paquete is not None else "sin_buzon"
+        self.en_segundo_plano(trabajo, self._guardado)
+
+    def _guardado(self, resultado, error) -> None:
+        if error is not None:
+            self.aviso.configure(text=f"No pude guardarla: {error}", fg=COLOR_ERROR)
+            return
+        if resultado == "no_abre":
+            self.aviso.configure(text="Esa clave no abre lo que publicó el colegio. Revisa que esté bien escrita.",
+                                 fg=COLOR_ERROR)
+            return
+        registrar("clave del colegio guardada en este PC")
+        refrescar = getattr(self.maestra, "refrescar_avisos", None)
+        if callable(refrescar):
+            refrescar()
+        self.texto.set("")
+        self.aviso.configure(text="✓ Guardada. Ya llegan los mensajes para ti y las claves de IA del colegio."
+                             if resultado == "ok"
+                             else "✓ Guardada. Cuando el colegio publique algo, llegará solo.", fg=COLOR_OK)
+        self.limpiar_botones()
+        self.boton("Cerrar", self.destroy, principal=True)
+
+
+class VentanaAdministrador(VentanaBase):
+    """Lo que el administrador publica para todos: mensajes, avisos del día y las claves de IA del colegio.
+
+    Antes de editar se trae lo último publicado (por si se publicó desde otro PC). Cada «Publicar» cifra todo con la
+    clave del colegio, lo sube al buzón de GitHub y lo deja también en este PC, para verlo al tiro.
+    """
+
+    ANCHO = 560
+
+    def __init__(self, maestra, pestana: str = "Mensajes"):
+        super().__init__(maestra, "Publicar para el colegio",
+                         "Llega en unos minutos a la barra de cada profe (lo dirigido y las claves, solo con la clave "
+                         "del colegio).",
+                         icono="📣", titulo_ventana="Publicar para el colegio")
+        self.codigo = colegio.codigo_guardado(vigencia=0)
+        self.contenido = colegio.contenido_guardado(BUZON_COLEGIO, self.codigo) or colegio.contenido_vacio()
+        self._publicando = False
+        self.tipo = "mensaje"
+        self.para = tk.StringVar(value="Todos")
+        self.fecha = tk.StringVar(value=datetime.date.today().strftime("%d/%m/%Y"))
+        self._borrador = ""
+        self.campos_claves: dict[str, tk.Entry] = {}
+        self.pestanas = Pestanas(self.cuerpo, [("Mensajes", self._mensajes), ("Claves de IA", self._claves)], pestana)
+        self.pestanas.pack(fill="both", expand=True)
+        self.aviso = tk.Label(self.cuerpo, text="Trayendo lo último publicado…", bg=COLOR_FONDO, fg=COLOR_TENUE,
+                              font=letra(9), anchor="w", justify="left", wraplength=self.ancho_texto())
+        self.aviso.pack(fill="x", pady=(8, 0))
+        self.boton("Cerrar", self.destroy)
+        self.colocar()
+        self.en_segundo_plano(lambda: colegio.descargar(BUZON_COLEGIO), self._traido)
+
+    def _traido(self, _cambio, error) -> None:
+        paquete = colegio.leer_paquete(BUZON_COLEGIO)
+        abierto = colegio.abrir(paquete, self.codigo) if paquete is not None else None
+        if paquete is not None and abierto is None:
+            self.aviso.configure(text="Lo publicado no se abre con la clave de este PC: si publicas, se reemplaza y los "
+                                      "profes necesitarán esta clave.", fg=COLOR_ERROR)
+            return
+        if getattr(error, "code", None) == 404:
+            self.aviso.configure(text="Todavía no hay nada publicado: lo primero que publiques crea el buzón.")
+        elif error is not None:
+            self.aviso.configure(text="Sin conexión con GitHub: se muestra lo guardado en este PC.")
+        else:
+            self.aviso.configure(text="")
+        if abierto is not None and abierto != self.contenido:
+            self.contenido = abierto
+            self._guardar_borrador()
+            self.pestanas.elegir(self.pestanas.actual)
+
+    # ------------------------------------------------------------------ mensajes
+    def _mensajes(self, panel) -> None:
+        opciones_segmentadas(panel, "Qué publicas", [("mensaje", "Mensaje"), ("aviso", "Aviso del día")], self.tipo,
+                             self._elegir_tipo)
+        tk.Label(panel, text="Un mensaje se ve hasta que el profe lo marca «Listo»; un aviso del día, solo ese día.",
+                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w").pack(fill="x", pady=(4, 0))
+        fila = tk.Frame(panel, bg=COLOR_FONDO)
+        fila.pack(fill="x", pady=(10, 0))
+        tk.Label(fila, text="Para", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10), width=5, anchor="w").pack(side="left")
+        estilo_campo(tk.Entry(fila, textvariable=self.para, font=letra(10))).pack(side="left", fill="x", expand=True,
+                                                                                ipady=3)
+        tk.Label(panel, text="«Todos» viaja sin cifrar (como un aviso en la entrada del colegio). Para el RUT o el nombre "
+                             "de uno o varios profes (separados por coma) va cifrado.", bg=COLOR_FONDO, fg=COLOR_TENUE,
+                 font=letra(9), anchor="w", justify="left", wraplength=self.ancho_texto() - int(48 * self.escala)).pack(
+            fill="x", padx=(int(48 * self.escala), 0))
+        if self.tipo == "aviso":
+            fila = tk.Frame(panel, bg=COLOR_FONDO)
+            fila.pack(fill="x", pady=(8, 0))
+            tk.Label(fila, text="Día", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10), width=5, anchor="w").pack(
+                side="left")
+            estilo_campo(tk.Entry(fila, textvariable=self.fecha, font=letra(10), width=12)).pack(side="left", ipady=3)
+        self.campo_texto = estilo_campo(tk.Text(panel, height=4, wrap="word", font=letra(10)))
+        self.campo_texto.pack(fill="x", pady=(10, 0))
+        self.campo_texto.insert("1.0", self._borrador)
+        boton_texto(panel, "Publicar", self._publicar_mensaje, principal=True).pack(anchor="e", pady=(8, 0))
+
+        mensajes = sorted(self.contenido["mensajes"], key=lambda m: m.get("creado", ""), reverse=True)
+        tk.Label(panel, text=f"PUBLICADOS · {len(mensajes)}", bg=COLOR_FONDO, fg=COLOR_ACENTO, font=letra(9, "bold"),
+                 anchor="w").pack(fill="x", pady=(12, 4))
+        lista = MarcoDesplazable(panel, alto_max=int(190 * self.escala))
+        lista.pack(fill="x")
+        if not mensajes:
+            tk.Label(lista.interior, text="Nada publicado todavía.", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(10),
+                     anchor="w").pack(fill="x")
+        for m in mensajes:
+            caja = tk.Frame(lista.interior, bg=COLOR_BOTON)
+            caja.pack(fill="x", pady=1)
+            para = "todos" if m["para"] == "*" else m["para"]
+            cuando = (f"aviso del {colegio._fecha(m['fecha']):%d/%m}" if m["tipo"] == "aviso"
+                      else f"mensaje · {m.get('creado', '')[8:10]}/{m.get('creado', '')[5:7]}")
+            quitar = tk.Label(caja, text="Quitar", bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9, "underline"),
+                              cursor="hand2")
+            quitar.pack(side="right", anchor="n", padx=8, pady=4)
+            quitar.bind("<Button-1>", lambda _e, i=m["id"]: self._quitar_mensaje(i))
+            reserva = "sin cifrar" if colegio.es_general(m) else "cifrado"
+            tk.Label(caja, text=f"{cuando} · para {para} · {reserva}", bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9),
+                     anchor="w").pack(fill="x", padx=8, pady=(4, 0))
+            tk.Label(caja, text=m["texto"], bg=COLOR_BOTON, fg=COLOR_TEXTO, font=letra(10), anchor="w", justify="left",
+                     wraplength=self.ancho_texto() - int(90 * self.escala)).pack(fill="x", padx=8, pady=(0, 4))
+        lista.activar_rueda()
+
+    def _guardar_borrador(self) -> None:
+        campo = getattr(self, "campo_texto", None)
+        try:
+            if campo is not None and campo.winfo_exists():
+                self._borrador = campo.get("1.0", "end").strip()
+        except tk.TclError:
+            pass
+
+    def _elegir_tipo(self, tipo: str) -> None:
+        self._guardar_borrador()
+        self.tipo = tipo
+        self.pestanas.elegir("Mensajes")
+
+    def _publicar_mensaje(self) -> None:
+        self._guardar_borrador()
+        para = self.para.get().strip()
+        para = "*" if para.lower() in ("", "todos", "todas", "*") else para
+        fecha = None
+        try:
+            if self.tipo == "aviso":
+                fecha = parsear_fecha(self.fecha.get())
+                if fecha < datetime.date.today():
+                    raise ValueError("Ese día ya pasó: elige hoy o un día que viene.")
+            mensaje = colegio.nuevo_mensaje(self.tipo, self._borrador, para, fecha, de=NOMBRE or "")
+        except ValueError as exc:
+            self.aviso.configure(text=str(exc), fg=COLOR_ERROR)
+            return
+        a_quien = "todos" if para == "*" else para
+
+        def listo() -> None:
+            self._borrador = ""
+        self._publicar({**self.contenido, "mensajes": self.contenido["mensajes"] + [mensaje]},
+                       f"Listo: publicado para {a_quien}. Llega a las barras en unos minutos.", listo)
+
+    def _quitar_mensaje(self, ident: str) -> None:
+        if not messagebox.askyesno("Barra Profe", "¿Quitar este mensaje? Deja de verse en todas las barras.", parent=self):
+            return
+        self._guardar_borrador()
+        self._publicar({**self.contenido, "mensajes": [m for m in self.contenido["mensajes"] if m["id"] != ident]},
+                       "Listo: se quitó. Desaparece de las barras en unos minutos.")
+
+    # ------------------------------------------------------------------ claves
+    def _claves(self, panel) -> None:
+        tk.Label(panel, text="El planificador de cada profe las usa sin poder verlas. Cada profe puede agregar una propia "
+                             "como extra: se usa primero y, si llega a su límite, sigue la del colegio.",
+                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w", justify="left",
+                 wraplength=self.ancho_texto()).pack(fill="x")
+        self.campos_claves = {}
+        for nombre, secreto, ayuda in colegio.PROVEEDORES_IA:
+            actual = self.contenido["claves"].get(secreto, "")
+            fila = tk.Frame(panel, bg=COLOR_FONDO)
+            fila.pack(fill="x", pady=(10, 2))
+            tk.Label(fila, text=nombre, bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10, "bold")).pack(side="left")
+            tk.Label(fila, text=f"publicada …{actual[-4:]}" if actual else "sin clave", bg=COLOR_FONDO,
+                     fg=COLOR_OK if actual else COLOR_TENUE, font=letra(9)).pack(side="left", padx=8)
+            if actual:
+                quitar = tk.Label(fila, text="Quitar", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9, "underline"),
+                                  cursor="hand2")
+                quitar.pack(side="right")
+                quitar.bind("<Button-1>", lambda _e, s=secreto, n=nombre: self._quitar_clave(s, n))
+            campo = estilo_campo(tk.Entry(panel, show="•", font=letra(10)))
+            campo.pack(fill="x", ipady=3)
+            tk.Label(panel, text=f"{'Para cambiarla, pega otra' if actual else 'Pega la clave'} · gratis en {ayuda}",
+                     bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w").pack(fill="x")
+            self.campos_claves[secreto] = campo
+        boton_texto(panel, "Guardar y publicar", self._publicar_claves, principal=True).pack(anchor="e", pady=(10, 0))
+
+    def _publicar_claves(self) -> None:
+        nuevas = {s: c.get().strip() for s, c in self.campos_claves.items() if c.get().strip()}
+        if not nuevas:
+            self.aviso.configure(text="Pega al menos una clave (las que dejes vacías quedan como están).", fg=COLOR_ERROR)
+            return
+        self._publicar({**self.contenido, "claves": {**self.contenido["claves"], **nuevas}},
+                       "Listo: las claves de IA del colegio quedaron publicadas.")
+
+    def _quitar_clave(self, secreto: str, nombre: str) -> None:
+        if not messagebox.askyesno("Barra Profe", f"¿Quitar la clave de {nombre} del colegio? Los profes que no tengan una "
+                                                  "propia dejarán de usar ese proveedor.", parent=self):
+            return
+        self._publicar({**self.contenido, "claves": {k: v for k, v in self.contenido["claves"].items() if k != secreto}},
+                       f"Listo: se quitó la clave de {nombre}.")
+
+    # ---------------------------------------------------------------- publicar
+    def _publicar(self, contenido: dict, texto_ok: str, al_publicar=None) -> None:
+        """Cifra todo con la clave del colegio, lo sube a GitHub y lo deja en este PC (en segundo plano)."""
+        if self._publicando:
+            return
+        self._publicando = True
+        hoy = datetime.date.today()
+        contenido = colegio.limpiar({**contenido, "mensajes": colegio.vigentes(colegio.limpiar(contenido)["mensajes"], hoy),
+                                     "publicado": f"{datetime.datetime.now():%Y-%m-%d %H:%M}"})
+        self.aviso.configure(text="Publicando en GitHub…", fg=COLOR_TENUE)
+        codigo = self.codigo
+
+        def trabajo() -> None:
+            import tempfile
+            paquete = colegio.cerrar(codigo, contenido)
+            with tempfile.TemporaryDirectory() as carpeta:
+                colegio.publicar(paquete, carpeta)
+            colegio.guardar_paquete(BUZON_COLEGIO, paquete)       # este PC lo ve al tiro, sin esperar la descarga
+
+        def listo(_resultado, error) -> None:
+            self._publicando = False
+            if error is not None:
+                self.aviso.configure(text=str(error), fg=COLOR_ERROR)
+                return
+            self.contenido = contenido
+            if al_publicar:
+                al_publicar()
+            registrar(f"colegio: {texto_ok}")
+            self.aviso.configure(text=texto_ok, fg=COLOR_OK)
+            refrescar = getattr(self.maestra, "refrescar_avisos", None)
+            if callable(refrescar):
+                refrescar()
+            self.pestanas.elegir(self.pestanas.actual)
+        self.en_segundo_plano(trabajo, listo)
+
+
+def ruta_de_registro(tipo: str) -> str:
+    """El CSV de cada pestaña de «Mis registros»: los del docente activo (el de subidas es uno por equipo)."""
+    return {"Libro": rutas.registro("registro_libro", PERFIL),
+            "Tareas": rutas.registro("registro_asignaciones", PERFIL),
+            "Subidas": os.path.join(BUZON, "registro_subidas.csv")}[tipo]
+
+
+class VentanaRegistros(VentanaBase):
+    """«Mis registros»: lo que la barra anotó del libro, de las subidas y de las tareas asignadas, con filtros.
+
+    Lee los mismos CSV que antes se abrían en Excel, que sigue a un clic («Abrir en Excel»).
+    """
+
+    ANCHO = 780
+    ANCHO_TABLA = 740             # la tabla mide lo mismo en las tres pestañas (la ventana no cambia de tamaño)
+    PERIODOS = (("semana", "Esta semana"), ("mes", "Este mes"), ("todo", "Todo"))
+    MAXIMO = 500                  # filas que se muestran (las más nuevas)
+    ANCHOS = {"fecha_clase": 92, "fecha": 118, "fecha_asignacion": 92, "curso": 62, "hora": 92, "asignatura": 130,
+              "clase": 210, "estado": 190, "firma": 90, "archivo": 250, "carpeta": 120, "id_recurso": 80,
+              "alumnas_asignadas": 80}
+    FLEXIBLES = ("asignatura", "clase", "estado", "archivo")     # se reparten el ancho que sobra
+
+    def __init__(self, maestra, pestana: str = "Libro"):
+        from barra_utiles import TIPOS_REGISTRO
+        super().__init__(maestra, "Mis registros", NOMBRE_COMPLETO or "", icono="🗂", titulo_ventana="Mis registros")
+        self.periodo = "mes"
+        self.filtros = {"curso": "", "estado": ""}
+        self.tipo = pestana if pestana in TIPOS_REGISTRO else "Libro"
+        self._estilo_tabla()
+        self.pestanas = Pestanas(self.cuerpo, [(n, lambda panel, n=n: self._llenar(panel, n)) for n in TIPOS_REGISTRO],
+                                 self.tipo)
+        self.pestanas.pack(fill="both", expand=True)
+        self.boton("Cerrar", self.destroy)
+        self.boton("Abrir en Excel", self._abrir_excel)
+        self.colocar()
+
+    def _estilo_tabla(self) -> None:
+        estilo = ttk.Style(self)
+        estilo.configure("Registros.Treeview", background=COLOR_BOTON, fieldbackground=COLOR_BOTON, foreground=COLOR_TEXTO,
+                         bordercolor=COLOR_FONDO, borderwidth=0, rowheight=int(22 * self.escala), font=letra(9))
+        estilo.map("Registros.Treeview", background=[("selected", COLOR_PULSADO)], foreground=[("selected", COLOR_TEXTO)])
+        estilo.configure("Registros.Treeview.Heading", background=COLOR_FONDO, foreground=COLOR_ACENTO,
+                         font=letra(9, "bold"), relief="flat", borderwidth=0)
+        estilo.map("Registros.Treeview.Heading", background=[("active", COLOR_HOVER)])
+
+    def _llenar(self, panel, tipo: str) -> None:
+        from barra_utiles import (TIPOS_REGISTRO, desde_periodo, estado_corto, filtrar_registro, leer_registro,
+                                  opciones_de_registro, ordenar_por_fecha)
+        self.tipo = tipo
+        cfg = TIPOS_REGISTRO[tipo]
+        filas = leer_registro(ruta_de_registro(tipo))
+        cursos, estados = opciones_de_registro(filas, tipo)
+        for clave, opciones in (("curso", cursos), ("estado", estados)):
+            if self.filtros[clave] not in opciones:
+                self.filtros[clave] = ""
+        controles = tk.Frame(panel, bg=COLOR_FONDO)
+        controles.pack(fill="x", pady=(0, 10))
+        segmento = opciones_segmentadas(controles, "Período", list(self.PERIODOS), self.periodo, self._elegir_periodo)
+        segmento.pack_configure(side="left", fill="none", pady=0)
+        self._combo(controles, "Curso", cursos, "curso")
+        if cfg["estado"]:
+            self._combo(controles, "Estado", estados, "estado")
+
+        visibles = ordenar_por_fecha(filtrar_registro(
+            filas, tipo, desde_periodo(self.periodo, datetime.date.today()), self.filtros["curso"], self.filtros["estado"],
+            docente=NOMBRE_COMPLETO if tipo == "Subidas" else ""), tipo)
+        marco = tk.Frame(panel, bg=COLOR_FONDO)
+        marco.pack(fill="both", expand=True)
+        columnas = [clave for clave, _titulo in cfg["columnas"]]
+        self.tabla = ttk.Treeview(marco, columns=columnas, show="headings", height=13, style="Registros.Treeview",
+                                  selectmode="browse")
+        flexibles = [c for c in columnas if c in self.FLEXIBLES]
+        fijo = sum(self.ANCHOS.get(c, 100) for c in columnas if c not in flexibles)
+        sobra = max(self.ANCHO_TABLA - fijo, 70 * len(flexibles))
+        peso = sum(self.ANCHOS.get(c, 100) for c in flexibles) or 1
+        for clave, titulo in cfg["columnas"]:
+            ancho = sobra * self.ANCHOS.get(clave, 100) / peso if clave in flexibles else self.ANCHOS.get(clave, 100)
+            self.tabla.heading(clave, text=titulo, anchor="w")
+            self.tabla.column(clave, width=int(ancho * self.escala), anchor="w", stretch=clave in flexibles)
+        self.tabla.tag_configure("aviso", foreground=COLOR_AVISO)
+        self.tabla.tag_configure("error", foreground=COLOR_ERROR)
+        def mostrar(clave: str, valor: str) -> str:      # las fechas siempre como 17/10/2026 (algunos CSV usan 2026-10-17)
+            if clave.startswith("fecha") and re.fullmatch(r"\d{4}-\d{2}-\d{2}", valor):
+                return "/".join(reversed(valor.split("-")))
+            return valor
+        for fila in visibles[:self.MAXIMO]:
+            estado = estado_corto(fila.get(cfg["estado"], "")) if cfg["estado"] else ""
+            etiqueta = "error" if estado.startswith("error") else "aviso" if estado.startswith("pendiente") else ""
+            self.tabla.insert("", "end", values=[mostrar(c, fila.get(c, "")) for c in columnas],
+                              tags=(etiqueta,) if etiqueta else ())
+        barra = BarraOscura(marco, command=self.tabla.yview)
+        self.tabla.configure(yscrollcommand=barra.set)
+        self.tabla.pack(side="left", fill="both", expand=True)
+        barra.pack(side="right", fill="y")
+        if not filas:
+            resumen = "Todavía no hay nada anotado aquí."
+        else:
+            resumen = f"{len(visibles)} de {len(filas)} filas"
+            if len(visibles) > self.MAXIMO:
+                resumen += f" · se ven las {self.MAXIMO} más nuevas (todas, con «Abrir en Excel»)"
+        self.resumen = tk.Label(panel, text=resumen, bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w",
+                                justify="left", wraplength=int(self.ANCHO_TABLA * self.escala))
+        self.resumen.pack(fill="x", pady=(6, 0))
+
+        def detalle(_evento=None) -> None:        # la fila elegida, completa (las columnas cortan los textos largos)
+            elegida = self.tabla.selection()
+            valores = self.tabla.item(elegida[0], "values") if elegida else ()
+            texto = " · ".join(f"{titulo}: {valor}" for (_c, titulo), valor in zip(cfg["columnas"], valores) if valor)
+            self.resumen.configure(text=texto or resumen, fg=COLOR_TEXTO if texto else COLOR_TENUE)
+        self.tabla.bind("<<TreeviewSelect>>", detalle)
+
+    def _combo(self, padre, titulo: str, valores: list[str], clave: str) -> None:
+        marco = tk.Frame(padre, bg=COLOR_FONDO)
+        marco.pack(side="left", padx=(18, 0))
+        tk.Label(marco, text=titulo, bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w").pack(fill="x")
+        combo = ttk.Combobox(marco, values=["Todos", *valores], state="readonly", style="Barra.TCombobox", font=letra(10),
+                             width=16)
+        combo.set(self.filtros[clave] or "Todos")
+        combo.pack(pady=(4, 0))
+        combo.bind("<<ComboboxSelected>>", lambda _e: self._filtrar(clave, "" if combo.get() == "Todos" else combo.get()))
+
+    def _elegir_periodo(self, valor: str) -> None:
+        self.periodo = valor
+        self.pestanas.elegir(self.tipo)
+
+    def _filtrar(self, clave: str, valor: str) -> None:
+        self.filtros[clave] = valor
+        self.pestanas.elegir(self.tipo)
+
+    def _abrir_excel(self) -> None:
+        ruta = ruta_de_registro(self.tipo)
+        if not os.path.isfile(ruta):
+            messagebox.showinfo("Barra Profe", "Este registro todavía no tiene nada anotado.", parent=self)
+            return
+        try:
+            os.startfile(ruta)
+        except OSError as exc:
+            messagebox.showerror("Barra Profe", f"No se pudo abrir el registro.\n\n{ruta}\n\n{exc}", parent=self)
 
 
 class SelectorAsignatura(tk.Frame):
@@ -1435,17 +2473,20 @@ class SelectorAsignatura(tk.Frame):
 
     Lo elegido se guarda por cuenta (personal\\subida_<cuenta>.json): lo lee la subida automática de cada
     10 minutos, así que vale para todo lo que haya en el buzón. Si el docente marcó «No volver a preguntar»,
-    solo avisa con cuál se sube y deja «Cambiar».
+    solo avisa con cuál se sube y deja «Cambiar». Va en filas (no en una sola línea) para que la ventana no se
+    ensanche de más.
     """
 
     def __init__(self, padre):
         super().__init__(padre, bg=COLOR_FONDO)
-        from barra_utiles import (ASIGNATURAS_SUBIDA, asignatura_sugerida, leer_preferencia_subida,
-                                  ruta_preferencia_subida)
+        from barra_utiles import asignatura_sugerida, asignaturas_de_la_cuenta, leer_preferencia_subida, ruta_preferencia_subida
+        perfil = perfil_de_trabajo()
+        # Las asignaturas que ofrece el WebClass de esta cuenta (leídas al configurarla) o, si no, la tabla de siempre
+        self.nombres = {clave: nombre for clave, nombre, _codigo in asignaturas_de_la_cuenta(perfil)}
         self.ruta = ruta_preferencia_subida(rutas.PERSONAL, PERFIL)
-        pref = leer_preferencia_subida(self.ruta)
-        self.nombres = dict(ASIGNATURAS_SUBIDA)
-        self.clave = pref["asignatura"] or asignatura_sugerida(perfil_de_trabajo())
+        pref = leer_preferencia_subida(self.ruta, self.nombres)
+        sugerida = asignatura_sugerida(perfil)
+        self.clave = pref["asignatura"] or (sugerida if sugerida in self.nombres else next(iter(self.nombres)))
         self.combo = None
         self.var_no_preguntar = tk.BooleanVar(value=not pref["preguntar"])
         if pref["preguntar"]:
@@ -1454,10 +2495,11 @@ class SelectorAsignatura(tk.Frame):
             self._mostrar_fija()
 
     def _mostrar_fija(self) -> None:
-        familia = "Segoe UI"
-        tk.Label(self, text=f"Se suben como: {self.nombres[self.clave]}", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(familia, 10)).pack(side="left")
-        cambiar = tk.Label(self, text="Cambiar", bg=COLOR_FONDO, fg=COLOR_ACENTO, font=(familia, 9, "underline"),
+        fila = tk.Frame(self, bg=COLOR_FONDO)
+        fila.pack(fill="x")
+        tk.Label(fila, text=f"Se suben como: {self.nombres[self.clave]}", bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                 font=letra(10)).pack(side="left")
+        cambiar = tk.Label(fila, text="Cambiar", bg=COLOR_FONDO, fg=COLOR_ACENTO, font=letra(9, "underline"),
                            cursor="hand2", takefocus=True)
         cambiar.pack(side="left", padx=(10, 0))
         cambiar.bind("<Button-1>", lambda _e: self.mostrar_selector())
@@ -1466,30 +2508,29 @@ class SelectorAsignatura(tk.Frame):
     def mostrar_selector(self) -> None:
         for hijo in self.winfo_children():
             hijo.destroy()
-        familia = "Segoe UI"
         estilo = ttk.Style(self)
         try:
             estilo.theme_use("clam")
         except tk.TclError:
             pass
-        estilo.configure("Barra.TCombobox", fieldbackground=COLOR_FONDO, background=COLOR_BOTON,
-                         foreground=COLOR_TEXTO, arrowcolor=COLOR_ACENTO, bordercolor=COLOR_ACENTO,
+        estilo.configure("Barra.TCombobox", fieldbackground=COLOR_BOTON, background=COLOR_BOTON,
+                         foreground=COLOR_TEXTO, arrowcolor=COLOR_ACENTO, bordercolor=COLOR_SUAVE,
                          lightcolor=COLOR_BOTON, darkcolor=COLOR_BOTON, padding=4)
-        estilo.map("Barra.TCombobox", fieldbackground=[("readonly", COLOR_FONDO)],
+        estilo.map("Barra.TCombobox", fieldbackground=[("readonly", COLOR_BOTON)],
                    foreground=[("readonly", COLOR_TEXTO)])
-        self.option_add("*TCombobox*Listbox.background", COLOR_FONDO)
+        self.option_add("*TCombobox*Listbox.background", COLOR_BOTON)
         self.option_add("*TCombobox*Listbox.foreground", COLOR_TEXTO)
         self.option_add("*TCombobox*Listbox.selectBackground", COLOR_ACENTO)
-        self.option_add("*TCombobox*Listbox.selectForeground", COLOR_FONDO)
-        tk.Label(self, text="Asignatura de estos recursos:", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(familia, 10)).pack(side="left")
-        self.combo = ttk.Combobox(self, values=list(self.nombres.values()), state="readonly", width=30,
-                                  style="Barra.TCombobox", font=(familia, 10))
+        self.option_add("*TCombobox*Listbox.selectForeground", COLOR_SOBRE_ACENTO)
+        tk.Label(self, text="Asignatura de estos recursos", bg=COLOR_FONDO, fg=COLOR_TENUE,
+                 font=letra(9), anchor="w").pack(fill="x")
+        self.combo = ttk.Combobox(self, values=list(self.nombres.values()), state="readonly",
+                                  style="Barra.TCombobox", font=letra(10))
         self.combo.set(self.nombres[self.clave])
-        self.combo.pack(side="left", padx=(8, 0))
+        self.combo.pack(fill="x", pady=(2, 0))
         tk.Checkbutton(self, text="No volver a preguntar", variable=self.var_no_preguntar, bg=COLOR_FONDO,
                        fg=COLOR_TENUE, selectcolor=COLOR_BOTON, activebackground=COLOR_FONDO,
-                       activeforeground=COLOR_TEXTO, font=(familia, 9)).pack(side="left", padx=(12, 0))
+                       activeforeground=COLOR_TEXTO, font=letra(9), anchor="w").pack(fill="x", pady=(4, 0))
         self.var_no_preguntar.set(False)
 
     def elegida(self) -> str:
@@ -1500,79 +2541,98 @@ class SelectorAsignatura(tk.Frame):
     def guardar(self) -> None:
         from barra_utiles import guardar_preferencia_subida
         try:
-            guardar_preferencia_subida(self.ruta, self.elegida(), preguntar=not self.var_no_preguntar.get())
+            guardar_preferencia_subida(self.ruta, self.elegida(), preguntar=not self.var_no_preguntar.get(),
+                                       validas=self.nombres)
         except (OSError, ValueError):
             pass                                          # sin guardar: se sube con la que ya había
 
 
-class VentanaSoltar(tk.Toplevel):
-    """Pregunta a qué nivel van los archivos soltados y los copia al buzón."""
+class VentanaSoltar(VentanaBase):
+    """Pregunta a qué nivel van los archivos soltados, los deja en el buzón y ofrece subirlos al tiro.
+
+    Primero aparecen los niveles de los cursos del docente y, plegados, los demás. Al elegir uno, los archivos se
+    copian a esa carpeta de «Subir a Webclass»: la subida automática los sube dentro de 10 minutos, o «Subir
+    ahora» los sube en el momento.
+    """
+
+    ANCHO = 380
 
     def __init__(self, maestra, archivos: list[str]):
-        super().__init__(maestra)
-        self.maestra = maestra
-        self.archivos = archivos
-        self.title("Enviar a Webclass")
-        self.configure(bg=COLOR_FONDO)
-        self.attributes("-topmost", True)
-        self.resizable(False, False)
-        fuente = tkfont.Font(family="Segoe UI", size=10)
-
-        resumen = (os.path.basename(archivos[0]) if len(archivos) == 1
-                   else f"{len(archivos)} archivos")
-        self.titulo_resumen = tk.Label(self, text=resumen, bg=COLOR_FONDO, fg=COLOR_TEXTO, anchor="w",
-                                       font=(fuente.cget("family"), 11, "bold"), wraplength=320,
-                                       justify="left")
-        self.titulo_resumen.pack(fill="x", padx=16, pady=(14, 2))
-        tk.Label(self, text="¿A qué nivel lo dejo?", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                 font=fuente, anchor="w").pack(fill="x", padx=16, pady=(0, 8))
-
+        super().__init__(maestra, self._resumen(archivos), "¿Para qué nivel es?", icono="📥",
+                         titulo_ventana="Enviar a Webclass")
+        self.archivos = list(archivos)
+        self.titulo_resumen = self.etiqueta_titulo
+        self.copiados: list[str] = []          # «nivel/archivo» de lo que quedó en el buzón
+        self.otros_abiertos = False
         try:
-            niveles = sorted(d for d in os.listdir(BUZON)
-                             if os.path.isdir(os.path.join(BUZON, d))
-                             and not d.startswith("_"))
+            carpetas = [d for d in os.listdir(BUZON)
+                        if os.path.isdir(os.path.join(BUZON, d)) and not d.startswith("_")]
         except OSError:
-            niveles = []
-        for nivel in niveles:
-            fila = tk.Label(self, text=f"  {nivel}", bg=COLOR_BOTON, fg=COLOR_TEXTO,
-                            font=fuente, anchor="w", cursor="hand2", pady=7)
-            fila.pack(fill="x", padx=16, pady=2)
-            fila.bind("<Button-1>", lambda _e, n=nivel: self._copiar(n))
-            fila.bind("<Enter>", lambda _e, f=fila: f.configure(bg=COLOR_HOVER))
-            fila.bind("<Leave>", lambda _e, f=fila: f.configure(bg=COLOR_BOTON))
+            carpetas = []
+        self.propias, self.otras = ordenar_carpetas(carpetas, niveles_del_docente(perfil_de_trabajo()))
+        if not self.propias:                    # un perfil sin cursos: se muestran todos, sin plegar
+            self.propias, self.otras = self.otras, []
+        self.caja_niveles = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
+        self.caja_niveles.pack(fill="x")
+        self._pintar_niveles()
 
         # Con qué asignatura se firman al subirse (se ve y se elige aquí, la primera vez y cuando se quiera).
-        self.selector_asignatura = SelectorAsignatura(self)
-        self.selector_asignatura.pack(fill="x", padx=16, pady=(10, 0))
+        self.selector_asignatura = SelectorAsignatura(self.cuerpo)
+        self.selector_asignatura.pack(fill="x", pady=(12, 0))
         # No todo es para el equipo PIE: se decide aquí, archivo por archivo, y siempre pasa por
         # la vista previa del correo antes de enviar. Por defecto no se envía nada.
         self.pie = tk.BooleanVar(value=False)
-        tk.Checkbutton(self, text="Además, enviarlo al equipo PIE por correo", variable=self.pie,
+        tk.Checkbutton(self.cuerpo, text="Además, enviarlo al equipo PIE por correo", variable=self.pie,
                        bg=COLOR_FONDO, fg=COLOR_TEXTO, selectcolor=COLOR_BOTON,
-                       activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO, font=fuente,
-                       anchor="w").pack(fill="x", padx=16, pady=(10, 0))
-        solo = tk.Label(self, text="  ✉ Solo enviarlo al equipo PIE (no subir a Webclass)",
-                        bg=COLOR_BOTON, fg=COLOR_TEXTO, font=fuente, anchor="w", cursor="hand2", pady=7)
-        solo.pack(fill="x", padx=16, pady=(6, 2))
-        solo.bind("<Button-1>", lambda _e: self._solo_pie())
-        solo.bind("<Enter>", lambda _e: solo.configure(bg=COLOR_HOVER))
-        solo.bind("<Leave>", lambda _e: solo.configure(bg=COLOR_BOTON))
-        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ACENTO,
-                              font=(fuente.cget("family"), 8), anchor="w",
-                              wraplength=320, justify="left")
-        self.aviso.pack(fill="x", padx=16, pady=(6, 0))
-        cerrar = tk.Label(self, text="   Cancelar   ", bg=COLOR_BOTON, fg=COLOR_TENUE,
-                          font=fuente, cursor="hand2", pady=5)
-        cerrar.pack(padx=16, pady=(8, 14))
-        cerrar.bind("<Button-1>", lambda _e: self.destroy())
-        self.update_idletasks()
-        x = maestra.winfo_x() - 360 if maestra.lado == "derecha" else maestra.winfo_x() + 60
-        self.geometry(f"+{max(20, x)}+{maestra.winfo_y() + 60}")
+                       activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO, font=letra(10),
+                       anchor="w").pack(fill="x", pady=(10, 0))
+        self._fila(self.cuerpo, "✉  Solo enviarlo al equipo PIE (no subir a Webclass)", self._solo_pie)
+        self.aviso = tk.Label(self.cuerpo, text="", bg=COLOR_FONDO, fg=COLOR_ACENTO, font=letra(9),
+                              anchor="w", wraplength=self.ancho_texto(), justify="left")
+        self.aviso.pack(fill="x", pady=(8, 0))
+        self.boton("Cancelar", self.destroy)
+        # Junto a la barra y siempre dentro del monitor: con una posición fija, al 150 % la ventana quedaba cortada.
+        self.colocar()
+
+    @staticmethod
+    def _resumen(archivos: list[str]) -> str:
+        return os.path.basename(archivos[0]) if len(archivos) == 1 else f"{len(archivos)} archivos"
+
+    @staticmethod
+    def _fila(padre, texto: str, accion) -> tk.Label:
+        return fila_accion(padre, texto, accion)
+
+    def _pintar_niveles(self) -> None:
+        for hijo in self.caja_niveles.winfo_children():
+            hijo.destroy()
+        if self.propias and self.otras:
+            tk.Label(self.caja_niveles, text="TUS CURSOS", bg=COLOR_FONDO, fg=COLOR_ACENTO,
+                     font=letra(9, "bold"), anchor="w").pack(fill="x", pady=(0, 2))
+        for carpeta in self.propias:
+            self._fila(self.caja_niveles, nombre_de_nivel(carpeta), lambda c=carpeta: self._copiar(c))
+        if self.otras:
+            enlace = tk.Label(self.caja_niveles, text=f"{'▾' if self.otros_abiertos else '▸'} OTROS NIVELES "
+                                                      f"({len(self.otras)})",
+                              bg=COLOR_FONDO, fg=COLOR_ACENTO, font=letra(9, "bold"), anchor="w",
+                              cursor="hand2", takefocus=True, highlightthickness=1,
+                              highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
+            enlace.pack(fill="x", pady=(8, 2))
+            enlace.bind("<Button-1>", lambda _e: self._alternar_otros())
+            for tecla in ("<Return>", "<space>"):
+                enlace.bind(tecla, lambda _e: (self._alternar_otros(), "break")[1])
+            if self.otros_abiertos:
+                for carpeta in self.otras:
+                    self._fila(self.caja_niveles, nombre_de_nivel(carpeta), lambda c=carpeta: self._copiar(c))
+
+    def _alternar_otros(self) -> None:
+        self.otros_abiertos = not self.otros_abiertos
+        self._pintar_niveles()
+        self.colocar(self.winfo_y())             # más alta: se reacomoda sin salirse de la pantalla
 
     def _copiar(self, nivel: str) -> None:
         destino = os.path.join(BUZON, nivel)
         os.makedirs(destino, exist_ok=True)   # puede que esa carpeta aún no exista
-        copiados, fallidos = 0, []
+        copiados, fallidos = [], []
         for origen in self.archivos:
             nombre = os.path.basename(origen)
             try:
@@ -1593,11 +2653,12 @@ class VentanaSoltar(tk.Toplevel):
                     os.remove(final)              # copia a medias: no se deja
                     fallidos.append(f"{nombre}: la copia quedó incompleta")
                     continue
-                copiados += 1
+                copiados.append(f"{nivel}/{os.path.basename(final)}")
             except OSError as exc:
                 fallidos.append(f"{nombre}: {exc}")
-        registrar(f"soltados {copiados} archivo(s) en {nivel}",
+        registrar(f"soltados {len(copiados)} archivo(s) en {nivel}",
                   "\n".join(fallidos))
+        self.copiados += copiados
         if copiados:
             self.selector_asignatura.guardar()
         if fallidos:
@@ -1607,15 +2668,33 @@ class VentanaSoltar(tk.Toplevel):
         if self.pie.get():
             self._abrir_correo()
             return
-        self.aviso.configure(text=f"{copiados} copiado(s) en «{nivel}». Se suben solos dentro de 10 minutos, "
-                                  f"como {self.selector_asignatura.nombres[self.selector_asignatura.elegida()]}.",
-                             fg=COLOR_ACENTO)
-        self.after(1800, self.destroy)
+        asignatura = self.selector_asignatura.nombres[self.selector_asignatura.elegida()]
+        self.aviso.configure(text=f"✓ {len(copiados)} copiado(s) en «{nombre_de_nivel(nivel)}». Se suben solos "
+                                  f"dentro de 10 minutos, como {asignatura}.", fg=COLOR_OK)
+        self.limpiar_botones()
+        self.boton("Subir ahora", self._subir_ahora, principal=True)
+        self.boton("Listo", self.destroy)
+
+    def _subir_ahora(self) -> None:
+        """Sube en este momento lo que se acaba de dejar en el buzón (solo eso, no lo demás que espere ahí)."""
+        maestra, claves = self.maestra, list(self.copiados)
+        todas = [it["clave"] for it in vista_previa_subir(BUZON).get("items", [])] or claves
+        boton = next((h for h in getattr(maestra, "herramientas", []) if h.get("tipo") == "webclass"
+                      and str(h.get("destino", "")).split()[:1] == ["subir"]), None) \
+            or {"nombre": "Subir recursos", "icono": "⬆️", "tipo": "webclass", "destino": "subir"}
+        self.destroy()
+        abrir({**boton, "_confirmado": True, "_seleccion": (claves, todas)}, maestra)
 
     def agregar_archivos(self, nuevos: list[str]) -> None:
-        """Otro archivo soltado mientras esta ventana está abierta: van todos juntos."""
+        """Otro archivo soltado mientras esta ventana está abierta: van todos juntos (si ya se copiaron los
+        anteriores, la ventana vuelve a preguntar el nivel, ahora para los nuevos)."""
+        if self.copiados:
+            self.archivos, self.copiados = [], []
+            self.aviso.configure(text="")
+            self.limpiar_botones()
+            self.boton("Cancelar", self.destroy)
         self.archivos += [n for n in nuevos if n not in self.archivos]
-        self.titulo_resumen.configure(text=f"{len(self.archivos)} archivos")
+        self.titulo_resumen.configure(text=self._resumen(self.archivos))
 
     def _abrir_correo(self) -> None:
         """Abre el correo al equipo PIE con estos archivos ya elegidos (se confirma allí)."""
@@ -1631,8 +2710,8 @@ class VentanaSoltar(tk.Toplevel):
 def boton_texto(padre, texto: str, accion, principal: bool = False) -> tk.Label:
     """Botón de texto de las ventanas auxiliares (hover, teclado, color de énfasis)."""
     normal = COLOR_ACENTO if principal else COLOR_BOTON
-    b = tk.Label(padre, text=f"  {texto}  ", font=("Segoe UI", 10), cursor="hand2",
-                 bg=normal, fg=COLOR_FONDO if principal else COLOR_TEXTO, pady=5,
+    b = tk.Label(padre, text=f"  {texto}  ", font=letra(10), cursor="hand2",
+                 bg=normal, fg=COLOR_SOBRE_ACENTO if principal else COLOR_TEXTO, pady=5,
                  takefocus=True, highlightthickness=1, highlightbackground=normal,
                  highlightcolor=COLOR_TEXTO)
     b.bind("<Button-1>", lambda _e: accion())
@@ -1659,9 +2738,20 @@ def matar_proceso(proceso: subprocess.Popen | None) -> None:
 
 
 def colocar_junto_a_la_barra(ventana: tk.Toplevel, barra, y_preferida: int | None = None) -> None:
-    """Pone una ventana al costado de la barra, sin salirse del monitor."""
+    """Pone una ventana al costado de la barra, sin salirse del monitor.
+
+    Si quien la abre no es la barra (por ejemplo, una ventana de actividad), se busca la barra hacia arriba; si no
+    hay barra, la ventana queda centrada en la pantalla.
+    """
+    while barra is not None and not hasattr(barra, "_area"):
+        barra = getattr(barra, "maestra", None) or getattr(barra, "master", None)
     ventana.update_idletasks()
     ancho, alto = ventana.winfo_reqwidth(), ventana.winfo_reqheight()
+    if barra is None:
+        x = (ventana.winfo_screenwidth() - ancho) // 2
+        y = (ventana.winfo_screenheight() - alto) // 3
+        ventana.geometry(f"+{max(0, x)}+{max(0, y)}")
+        return
     izq, arriba, der, abajo = barra._area()
     if barra.lado == "derecha":
         x = barra.winfo_x() - ancho - 12
@@ -1690,8 +2780,11 @@ class ListaMarcable(tk.Frame):
         self.cajas: dict[str, tk.Label] = {}
         self.filas: dict[str, tk.Frame] = {}
         self._grupo_actual: str | None = None
+        self._cabecera_actual: tk.Label | None = None
+        self._cabecera_de: dict[str, tk.Label] = {}          # para quitar el título del grupo cuando queda vacío
+        self._filas_de: dict[str, list[tk.Frame]] = {}
         self.canvas = tk.Canvas(self, bg=COLOR_BOTON, highlightthickness=0, bd=0, height=10)
-        self.barra = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.barra = BarraOscura(self, command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.barra.set)
         self.interior = tk.Frame(self.canvas, bg=COLOR_BOTON)
         self._ventana = self.canvas.create_window((0, 0), window=self.interior, anchor="nw")
@@ -1721,27 +2814,41 @@ class ListaMarcable(tk.Frame):
             self.barra.pack_forget()
 
     def agregar(self, clave: str, titulo: str, detalle: str = "", grupo: str = "",
-                marcado: bool = True, ancho_texto: int = 380) -> None:
+                marcado: bool = True, ancho_texto: int = 380, accion: tuple | None = None) -> None:
+        """Una fila con casilla. `accion` = (texto, función(evento)): un enlace a la derecha que no marca la casilla."""
         familia = "Segoe UI"
         if grupo and grupo != self._grupo_actual:
             self._grupo_actual = grupo
             cab = tk.Label(self.interior, text=grupo.upper(), bg=COLOR_BOTON, fg=COLOR_ACENTO,
-                           font=(familia, 8, "bold"), anchor="w")
+                           font=letra(8, "bold"), anchor="w")
             cab.pack(fill="x", padx=12, pady=(8, 0))
             self._rueda_en(cab)
+            self._cabecera_actual = cab
+        if grupo and self._cabecera_actual is not None:
+            self._cabecera_de[clave] = self._cabecera_actual
         fila = tk.Frame(self.interior, bg=COLOR_BOTON, cursor="hand2", takefocus=True,
                         highlightthickness=1, highlightbackground=COLOR_BOTON,
                         highlightcolor=COLOR_ACENTO)
         fila.pack(fill="x", padx=6, pady=1)
+        self._filas_de.setdefault(clave, []).append(fila)
         caja = tk.Label(fila, text="", bg=COLOR_BOTON, fg=COLOR_ACENTO,
-                        font=("Segoe UI Symbol", 13), width=2)
+                        font=letra(13, familia="Segoe UI Symbol"), width=2)
         caja.pack(side="left", padx=(6, 2), anchor="n", pady=2)
+        if accion:
+            texto_accion, al_pulsar = accion
+            enlace = tk.Label(fila, text=texto_accion, bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9, "underline"),
+                              cursor="hand2")
+            enlace.pack(side="right", anchor="n", padx=(4, 8), pady=5)
+            enlace.bind("<Button-1>", al_pulsar)
+            enlace.bind("<Enter>", lambda _e, x=enlace: x.configure(fg=COLOR_ACENTO))
+            enlace.bind("<Leave>", lambda _e, x=enlace: x.configure(fg=COLOR_TENUE))
+            self._rueda_en(enlace)
         columna = tk.Frame(fila, bg=COLOR_BOTON)
         columna.pack(side="left", fill="x", expand=True, pady=4)
-        tk.Label(columna, text=titulo, bg=COLOR_BOTON, fg=COLOR_TEXTO, font=(familia, 10),
+        tk.Label(columna, text=titulo, bg=COLOR_BOTON, fg=COLOR_TEXTO, font=letra(10),
                  anchor="w", justify="left", wraplength=ancho_texto).pack(fill="x")
         if detalle:
-            tk.Label(columna, text=detalle, bg=COLOR_BOTON, fg=COLOR_TENUE, font=(familia, 9),
+            tk.Label(columna, text=detalle, bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9),
                      anchor="w", justify="left", wraplength=ancho_texto).pack(fill="x")
         self.estado[clave] = marcado
         self.orden.append(clave)
@@ -1784,6 +2891,20 @@ class ListaMarcable(tk.Frame):
 
     def todas(self) -> list[str]:
         return list(self.orden)
+
+    def quitar(self, clave: str) -> None:
+        """Saca una fila de la lista (y el título de su grupo si quedó vacío): ya no se ofrece ni se cuenta."""
+        if clave not in self.estado:
+            return
+        for fila in self._filas_de.pop(clave, []):
+            fila.destroy()
+        for registro in (self.estado, self.cajas, self.filas):
+            registro.pop(clave, None)
+        self.orden = [c for c in self.orden if c != clave]
+        cabecera = self._cabecera_de.pop(clave, None)
+        if cabecera is not None and cabecera not in self._cabecera_de.values():
+            cabecera.destroy()
+        self._avisar()
 
     def _avisar(self) -> None:
         if self.al_cambiar:
@@ -1832,11 +2953,11 @@ class VistaPrevia(tk.Toplevel):
         cabecera.pack(fill="x", padx=18, pady=(16, 2))
         if herramienta.get("icono"):
             tk.Label(cabecera, text=herramienta["icono"], bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                     font=("Segoe UI Emoji", 16)).pack(side="left", padx=(0, 8))
+                     font=letra(16, familia="Segoe UI Emoji")).pack(side="left", padx=(0, 8))
         tk.Label(cabecera, text=self.nombre, bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(familia, 13, "bold")).pack(side="left")
+                 font=letra(13, "bold")).pack(side="left")
         self.subtitulo = tk.Label(self, text="Antes de empezar, esto es lo que voy a hacer:",
-                                  bg=COLOR_FONDO, fg=COLOR_TENUE, font=(familia, 9),
+                                  bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
                                   anchor="w")
         self.subtitulo.pack(fill="x", padx=18, pady=(0, 8))
         # Si el botón traía una advertencia propia ("puede tardar varios minutos…"),
@@ -1844,14 +2965,14 @@ class VistaPrevia(tk.Toplevel):
         advertencia = (herramienta.get("confirmar") or "").split("\n\n")[0].strip()
         if advertencia:
             tk.Label(self, text=advertencia, bg=COLOR_FONDO, fg=COLOR_ALERTA_SUAVE,
-                     font=(familia, 9), anchor="w", justify="left",
+                     font=letra(9), anchor="w", justify="left",
                      wraplength=self.ANCHO - 40).pack(fill="x", padx=18, pady=(0, 8))
 
         self.barra_carga = tk.Canvas(self, height=8, bg=COLOR_BOTON, bd=0, highlightthickness=0)
         self.controles = tk.Frame(self, bg=COLOR_FONDO)
         self.cuerpo = tk.Frame(self, bg=COLOR_BOTON)
         self.cuerpo.pack(fill="x", padx=18)
-        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=(familia, 9),
+        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
                               anchor="w", justify="left", wraplength=self.ANCHO - 40)
         self.aviso.pack(fill="x", padx=18, pady=(8, 0))
         self.pie = tk.Frame(self, bg=COLOR_FONDO)
@@ -1861,7 +2982,7 @@ class VistaPrevia(tk.Toplevel):
         tipo = herramienta.get("vista_previa")
         self.tipo = tipo
         if tipo == "libro":
-            self._mostrar(vista_previa_libro(self._leer_estado_libro(),
+            self._mostrar(vista_previa_libro(aplicar_sin_clases(self._leer_estado_libro(), leer_sin_clases(SIN_CLASES)),
                                              datetime.date.today().strftime("%d/%m/%Y")))
         elif tipo == "subir":
             datos_subida = vista_previa_subir(BUZON)
@@ -1913,8 +3034,8 @@ class VistaPrevia(tk.Toplevel):
                 fila = tk.Frame(self.cuerpo, bg=COLOR_BOTON)
                 fila.pack(fill="x", padx=12, pady=(6, 0))
                 tk.Label(fila, text="•", bg=COLOR_BOTON, fg=COLOR_ACENTO,
-                         font=(familia, 11, "bold")).pack(side="left", anchor="n")
-                tk.Label(fila, text=punto, bg=COLOR_BOTON, fg=COLOR_TEXTO, font=(familia, 10),
+                         font=letra(11, "bold")).pack(side="left", anchor="n")
+                tk.Label(fila, text=punto, bg=COLOR_BOTON, fg=COLOR_TEXTO, font=letra(10),
                          anchor="w", justify="left",
                          wraplength=self.ANCHO - 90).pack(side="left", fill="x", expand=True,
                                                           padx=(6, 0))
@@ -1942,11 +3063,11 @@ class VistaPrevia(tk.Toplevel):
             hijo.destroy()
         familia = "Segoe UI"
         self.contador = tk.Label(self.controles, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                                 font=(familia, 9))
+                                 font=letra(9))
         self.contador.pack(side="right")
         for texto, valor in (("Seleccionar todo", True), ("Ninguno", False)):
             enlace = tk.Label(self.controles, text=texto, bg=COLOR_FONDO, fg=COLOR_ACENTO,
-                              font=(familia, 9, "underline"), cursor="hand2", takefocus=True,
+                              font=letra(9, "underline"), cursor="hand2", takefocus=True,
                               highlightthickness=1, highlightbackground=COLOR_FONDO,
                               highlightcolor=COLOR_TEXTO)
             enlace.pack(side="left", padx=(0, 14))
@@ -1956,10 +3077,61 @@ class VistaPrevia(tk.Toplevel):
         self.lista = ListaMarcable(self.cuerpo, al_cambiar=self._al_cambiar_seleccion,
                                    alto_max=int(300))
         self.lista.pack(fill="x", padx=2, pady=2)
+        self._items_lista = items
         for it in items:
+            # Feriado, salida…: desde la misma fila se marca que no hubo clase y no se vuelve a ofrecer.
+            accion = (("No hubo clase ▾", lambda e, it=it: self._menu_sin_clase(e, it))
+                      if it.get("sin_clase") else None)
             self.lista.agregar(it["clave"], it["titulo"], it["detalle"], it["grupo"],
-                               ancho_texto=self.ANCHO - 100)
-        self._al_cambiar_seleccion(self.lista.marcadas(), len(items))
+                               ancho_texto=self.ANCHO - 100 - (110 if accion else 0), accion=accion)
+        self._al_cambiar_seleccion(self.lista.marcadas(), len(self.lista.todas()))
+
+    # ------------------------------------------------- «no hubo clase» desde la lista
+    def _menu_sin_clase(self, evento, item: dict) -> None:
+        marca = item["sin_clase"]
+        menu = tk.Menu(self, tearoff=0, bg=COLOR_BOTON, fg=COLOR_TEXTO, activebackground=COLOR_ACENTO,
+                       activeforeground=COLOR_SOBRE_ACENTO, font=letra(10))
+        que = "esta clase" if marca["campo"] == "clases" else "clase en este bloque"
+        menu.add_command(label=f"No hubo {que}: no volver a mostrarla",
+                         command=lambda: self._marcar_sin_clase(item, todo_el_dia=False))
+        dia = fecha_iso(marca.get("dia"))
+        if dia:
+            menu.add_command(label=f"El {DIAS[dia.weekday()]} {dia:%d/%m} no hubo clases (feriado…)",
+                             command=lambda: self._marcar_sin_clase(item, todo_el_dia=True))
+        try:
+            menu.tk_popup(evento.x_root, evento.y_root)
+        finally:
+            menu.grab_release()
+
+    def _marcar_sin_clase(self, item: dict, todo_el_dia: bool) -> None:
+        """Guarda «no hubo clase» (ese bloque o clase, o el día entero) y saca de la lista lo que ya no corresponde."""
+        marca = item["sin_clase"]
+        try:
+            if todo_el_dia:
+                dia = fecha_iso(marca["dia"])
+                marcar_dias_sin_clases(SIN_CLASES, [dia])
+                quitar = [i["clave"] for i in self._items_lista if (i.get("sin_clase") or {}).get("dia") == marca["dia"]]
+                texto = f"Listo: el {DIAS[dia.weekday()]} {dia:%d/%m} queda como día sin clases."
+            else:
+                ignorar_en_sin_clases(SIN_CLASES, marca["campo"], marca["clave"], marca["titulo"])
+                quitar = [item["clave"]]
+                texto = f"Listo: «{marca['titulo']}» queda como clase que no se hizo."
+        except (OSError, ValueError) as exc:
+            self.aviso.configure(text=f"No pude guardarlo: {exc}", fg=COLOR_ERROR)
+            return
+        registrar(f"sin clases: {texto}")
+        for clave in quitar:
+            self.lista.quitar(clave)
+        refrescar = getattr(self.maestra, "_refrescar_firmas", None)
+        if callable(refrescar):
+            refrescar()                    # la tarjeta «Hoy» deja de contarlo al tiro
+        texto += " Se deshace en «Días sin clases»."
+        if not self.lista.todas():
+            self._mostrar({"titulo": self.nombre, "puntos": ["Ya no queda nada por hacer."], "items": [],
+                           "hay_trabajo": False, "aviso": texto})
+            return
+        self.aviso.configure(text=texto, fg=COLOR_TENUE)
+        colocar_junto_a_la_barra(self, self.maestra)
 
     def _al_cambiar_seleccion(self, marcadas: list[str], total: int) -> None:
         self.contador.configure(text=f"{len(marcadas)} de {total} marcadas")
@@ -1973,7 +3145,7 @@ class VistaPrevia(tk.Toplevel):
         n = len(self.lista.marcadas())
         b.configure(text=f"  Continuar ({n})  " if n else "  Continuar  ",
                     bg=COLOR_ACENTO if n else COLOR_BOTON,
-                    fg=COLOR_FONDO if n else COLOR_SUAVE,
+                    fg=COLOR_SOBRE_ACENTO if n else COLOR_SUAVE,
                     cursor="hand2" if n else "arrow")
         # El color de pasar el mouse también depende de si se puede continuar.
         if n:
@@ -2007,7 +3179,7 @@ class VistaPrevia(tk.Toplevel):
             "Revisando qué haría, sin escribir nada en Webclass…")
         self.barra_carga.pack(fill="x", padx=18, pady=(0, 8), before=self.cuerpo)
         self.estado_carga = tk.Label(self.cuerpo, text="", bg=COLOR_BOTON, fg=COLOR_TENUE,
-                                     font=("Segoe UI", 10), anchor="w")
+                                     font=letra(10), anchor="w")
         self.estado_carga.pack(fill="x", padx=12, pady=12)
         self._poner_botones([("Continuar sin vista previa", self._continuar, False),
                              ("Cancelar", self.destroy, False)])
@@ -2145,32 +3317,33 @@ class VentanaDestinos(tk.Toplevel):
         familia = "Segoe UI"
 
         tk.Label(self, text="A dónde asigno cada unidad", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(familia, 13, "bold"), anchor="w").pack(fill="x", padx=18, pady=(16, 2))
+                 font=letra(13, "bold"), anchor="w").pack(fill="x", padx=18, pady=(16, 2))
         self.subtitulo = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                                  font=(familia, 9), anchor="w", justify="left",
+                                  font=letra(9), anchor="w", justify="left",
                                   wraplength=self.ANCHO - 40)
         self.subtitulo.pack(fill="x", padx=18, pady=(0, 8))
         # Los controles se crean una sola vez (si no, escribir en el filtro perdería el foco).
         self.controles = tk.Frame(self, bg=COLOR_FONDO)
         tk.Label(self.controles, text="Filtrar:", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                 font=("Segoe UI", 9)).pack(side="left", padx=(0, 6))
+                 font=letra(9)).pack(side="left", padx=(0, 6))
         self.entrada = tk.Entry(self.controles, textvariable=self.filtro, bg=COLOR_BOTON,
-                                fg=COLOR_TEXTO, bd=0, font=("Segoe UI", 10),
+                                fg=COLOR_TEXTO, bd=0, font=letra(10),
                                 insertbackground=COLOR_TEXTO, highlightthickness=1,
                                 highlightbackground=COLOR_BOTON, highlightcolor=COLOR_ACENTO,
                                 width=22)
+        estilo_campo(self.entrada)
         self.entrada.pack(side="left", ipady=4, padx=(0, 10))
         self.entrada.bind("<KeyRelease>", lambda _e: self._refrescar_lista())
         self.enlace_cambiadas = self._enlace(self.controles, "Solo las que cambié",
                                              self._alternar_cambiadas)
         self.enlace_cambiadas.pack(side="left", padx=(0, 10))
         self.contador = tk.Label(self.controles, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                                 font=("Segoe UI", 9))
+                                 font=letra(9))
         self.contador.pack(side="right")
         self.cuerpo = tk.Frame(self, bg=COLOR_BOTON)
         self.cuerpo.pack(fill="x", padx=18)
         self.barra_carga = tk.Canvas(self, height=8, bg=COLOR_BOTON, bd=0, highlightthickness=0)
-        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=(familia, 9),
+        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
                               anchor="w", justify="left", wraplength=self.ANCHO - 40)
         self.aviso.pack(fill="x", padx=18, pady=(8, 0))
         self.pie = tk.Frame(self, bg=COLOR_FONDO)
@@ -2236,7 +3409,7 @@ class VentanaDestinos(tk.Toplevel):
 
     def _enlace(self, padre, texto: str, accion) -> tk.Label:
         e = tk.Label(padre, text=texto, bg=COLOR_FONDO, fg=COLOR_ACENTO,
-                     font=("Segoe UI", 9, "underline"), cursor="hand2", takefocus=True,
+                     font=letra(9, "underline"), cursor="hand2", takefocus=True,
                      highlightthickness=1, highlightbackground=COLOR_FONDO,
                      highlightcolor=COLOR_TEXTO)
         e.bind("<Button-1>", lambda _e: accion())
@@ -2264,7 +3437,7 @@ class VentanaDestinos(tk.Toplevel):
                                ancho_texto=self.ANCHO - 110)
         if not filas:
             tk.Label(self.cuerpo, text="Ninguna unidad coincide con el filtro.", bg=COLOR_BOTON,
-                     fg=COLOR_TENUE, font=("Segoe UI", 10)).pack(padx=12, pady=14)
+                     fg=COLOR_TENUE, font=letra(10)).pack(padx=12, pady=14)
         self._poner_botones([("Elegir destino", self._elegir_destino, True),
                              ("Buscar unidades nuevas", self._buscar_unidades, False),
                              ("Cerrar", self.destroy, False)])
@@ -2286,7 +3459,7 @@ class VentanaDestinos(tk.Toplevel):
             return
         n = len(marcadas)
         b.configure(text=f"  Elegir destino ({n})  " if n else "  Elegir destino  ",
-                    bg=COLOR_ACENTO if n else COLOR_BOTON, fg=COLOR_FONDO if n else COLOR_SUAVE)
+                    bg=COLOR_ACENTO if n else COLOR_BOTON, fg=COLOR_SOBRE_ACENTO if n else COLOR_SUAVE)
 
     # ------------------------------------------------- vista 2: opciones de cada una
     def _elegir_destino(self) -> None:
@@ -2317,7 +3490,7 @@ class VentanaDestinos(tk.Toplevel):
                  "después quedan guardados.")
         self.barra_carga.pack(fill="x", padx=18, pady=(0, 8), before=self.cuerpo)
         self.estado_carga = tk.Label(self.cuerpo, text="", bg=COLOR_BOTON, fg=COLOR_TENUE,
-                                     font=("Segoe UI", 10), anchor="w")
+                                     font=letra(10), anchor="w")
         self.estado_carga.pack(fill="x", padx=12, pady=12)
         self._poner_botones([("Volver", self._cancelar_consulta, False)])
         orden = comando_webclass("asignar", "--opciones-destino", ",".join(ids))
@@ -2448,10 +3621,10 @@ class VentanaDestinos(tk.Toplevel):
             fila = tk.Frame(self.cuerpo, bg=COLOR_BOTON)
             fila.pack(fill="x", padx=12, pady=(8, 0))
             tk.Label(fila, text=f"{info.get('curso', '')} · {info.get('nombre', unidad)}",
-                     bg=COLOR_BOTON, fg=COLOR_TEXTO, font=("Segoe UI", 10, "bold"), anchor="w",
+                     bg=COLOR_BOTON, fg=COLOR_TEXTO, font=letra(10, "bold"), anchor="w",
                      justify="left", wraplength=self.ANCHO - 70).pack(fill="x")
             combo = ttk.Combobox(fila, values=valores, state="readonly",
-                                 style="Barra.TCombobox", font=("Segoe UI", 10),
+                                 style="Barra.TCombobox", font=letra(10),
                                  width=max(len(v) for v in valores) + 2)
             combo.current(indice)
             combo.pack(fill="x", pady=(4, 0))
@@ -2539,12 +3712,12 @@ class VentanaPeriodo(tk.Toplevel):
         cabecera = tk.Frame(self, bg=COLOR_FONDO)
         cabecera.pack(fill="x", padx=18, pady=(16, 2))
         tk.Label(cabecera, text=herramienta.get("icono", "⏪"), bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=("Segoe UI Emoji", 16)).pack(side="left", padx=(0, 8))
+                 font=letra(16, familia="Segoe UI Emoji")).pack(side="left", padx=(0, 8))
         tk.Label(cabecera, text="¿Hasta cuándo miro hacia atrás?", bg=COLOR_FONDO,
-                 fg=COLOR_TEXTO, font=(familia, 13, "bold")).pack(side="left")
+                 fg=COLOR_TEXTO, font=letra(13, "bold")).pack(side="left")
         tk.Label(self, text="Busco los bloques de esos días que tienen algo sin registrar. "
                             "Después eliges cuáles completar.",
-                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=(familia, 9), anchor="w", justify="left",
+                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w", justify="left",
                  wraplength=self.ANCHO - 40).pack(fill="x", padx=18, pady=(0, 8))
 
         marco = tk.Frame(self, bg=COLOR_BOTON)
@@ -2553,25 +3726,26 @@ class VentanaPeriodo(tk.Toplevel):
             tk.Radiobutton(marco, text=texto, value=valor, variable=self.atajo,
                            command=self._actualizar, bg=COLOR_BOTON, fg=COLOR_TEXTO,
                            selectcolor=COLOR_FONDO, activebackground=COLOR_BOTON,
-                           activeforeground=COLOR_ACENTO, font=(familia, 10), anchor="w",
+                           activeforeground=COLOR_ACENTO, font=letra(10), anchor="w",
                            bd=0, highlightthickness=0).pack(fill="x", padx=14, pady=(6, 0))
         fila_fecha = tk.Frame(marco, bg=COLOR_BOTON)
         fila_fecha.pack(fill="x", padx=14, pady=(2, 10))
         tk.Label(fila_fecha, text="Fecha (día/mes/año):", bg=COLOR_BOTON, fg=COLOR_TENUE,
-                 font=(familia, 9)).pack(side="left", padx=(24, 6))
+                 font=letra(9)).pack(side="left", padx=(24, 6))
         self.campo_fecha = tk.Entry(fila_fecha, textvariable=self.texto_fecha, bg=COLOR_FONDO,
-                                    fg=COLOR_TEXTO, bd=0, font=(familia, 10), width=12,
+                                    fg=COLOR_TEXTO, bd=0, font=letra(10), width=12,
                                     insertbackground=COLOR_TEXTO, highlightthickness=1,
                                     highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
+        estilo_campo(self.campo_fecha)
         self.campo_fecha.pack(side="left", ipady=3)
         self.campo_fecha.bind("<KeyRelease>", lambda _e: self._actualizar())
         self.campo_fecha.bind("<FocusIn>", lambda _e: (self.atajo.set("fecha"), self._actualizar()))
         self.campo_fecha.bind("<Return>", lambda _e: self._continuar())
 
-        self.rango = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=(familia, 10, "bold"),
+        self.rango = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10, "bold"),
                               anchor="w", justify="left", wraplength=self.ANCHO - 40)
         self.rango.pack(fill="x", padx=18, pady=(10, 0))
-        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=(familia, 9),
+        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=letra(9),
                               anchor="w", justify="left", wraplength=self.ANCHO - 40)
         self.aviso.pack(fill="x", padx=18)
         pie = tk.Frame(self, bg=COLOR_FONDO)
@@ -2657,19 +3831,19 @@ class VentanaObservacion(tk.Toplevel):
         self.option_add("*TCombobox*Listbox.selectBackground", COLOR_ACENTO)
         self.option_add("*TCombobox*Listbox.selectForeground", COLOR_FONDO)
         tk.Label(self, text="Registrar observación", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(familia, 13, "bold"), anchor="w").pack(fill="x", padx=18, pady=(16, 2))
+                 font=letra(13, "bold"), anchor="w").pack(fill="x", padx=18, pady=(16, 2))
         self.estado = tk.Label(self, text="Elige el curso para ver sus alumnas.", bg=COLOR_FONDO,
-                               fg=COLOR_TENUE, font=(familia, 9), anchor="w", justify="left",
+                               fg=COLOR_TENUE, font=letra(9), anchor="w", justify="left",
                                wraplength=self.ANCHO - 40)
         self.estado.pack(fill="x", padx=18, pady=(0, 6))
         fila = tk.Frame(self, bg=COLOR_FONDO)
         fila.pack(fill="x", padx=18)
         self.curso = ttk.Combobox(fila, values=list(perfil.get("curso_ids", {})), state="readonly",
-                                  width=8, style="Barra.TCombobox", font=(familia, 10))
+                                  width=8, style="Barra.TCombobox", font=letra(10))
         self.curso.pack(side="left")
         self.curso.bind("<<ComboboxSelected>>", lambda _e: self._cargar())
         self.asignatura = ttk.Combobox(fila, values=[], state="readonly", width=34,
-                                       style="Barra.TCombobox", font=(familia, 10))
+                                       style="Barra.TCombobox", font=letra(10))
         self.asignatura.pack(side="left", padx=(8, 0))
         self.cuerpo = tk.Frame(self, bg=COLOR_BOTON)
         self.cuerpo.pack(fill="x", padx=18, pady=(8, 0))
@@ -2679,22 +3853,24 @@ class VentanaObservacion(tk.Toplevel):
         for texto, valor in self.TIPOS:
             tk.Radiobutton(fila2, text=texto, variable=self.tipo, value=valor, bg=COLOR_FONDO,
                            fg=COLOR_TEXTO, selectcolor=COLOR_BOTON, activebackground=COLOR_FONDO,
-                           activeforeground=COLOR_TEXTO, font=(familia, 10)).pack(side="left")
+                           activeforeground=COLOR_TEXTO, font=letra(10)).pack(side="left")
         tk.Label(fila2, text="Fecha:", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                 font=(familia, 9)).pack(side="left", padx=(14, 4))
+                 font=letra(9)).pack(side="left", padx=(14, 4))
         self.fecha = tk.Entry(fila2, width=11, bg=COLOR_BOTON, fg=COLOR_TEXTO, bd=0,
-                              insertbackground=COLOR_TEXTO, font=(familia, 10))
+                              insertbackground=COLOR_TEXTO, font=letra(10))
+        estilo_campo(self.fecha)
         self.fecha.insert(0, datetime.date.today().strftime("%d/%m/%Y"))
         self.fecha.pack(side="left", ipady=3)
         self.texto = tk.Text(self, height=4, wrap="word", bg=COLOR_BOTON, fg=COLOR_TEXTO, bd=0,
-                             insertbackground=COLOR_TEXTO, font=(familia, 10), padx=8, pady=6)
+                             insertbackground=COLOR_TEXTO, font=letra(10), padx=8, pady=6)
+        estilo_campo(self.texto)
         self.texto.pack(fill="x", padx=18, pady=(8, 0))
         self.familia = tk.BooleanVar(value=False)
         tk.Checkbutton(self, text="Que también la vean el alumno y el apoderado",
                        variable=self.familia, bg=COLOR_FONDO, fg=COLOR_TENUE, selectcolor=COLOR_BOTON,
                        activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO,
-                       font=(familia, 9)).pack(anchor="w", padx=18, pady=(6, 0))
-        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=(familia, 9),
+                       font=letra(9)).pack(anchor="w", padx=18, pady=(6, 0))
+        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=letra(9),
                               anchor="w", justify="left", wraplength=self.ANCHO - 40)
         self.aviso.pack(fill="x", padx=18, pady=(6, 0))
         pie = tk.Frame(self, bg=COLOR_FONDO)
@@ -2828,23 +4004,23 @@ class VentanaPlanificar(tk.Toplevel):
         self.option_add("*TCombobox*Listbox.foreground", COLOR_TEXTO)
         self.option_add("*TCombobox*Listbox.selectBackground", COLOR_ACENTO)
         self.option_add("*TCombobox*Listbox.selectForeground", COLOR_FONDO)
-        tk.Label(self, text="Planificar", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=(familia, 13, "bold"),
+        tk.Label(self, text="Planificar", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(13, "bold"),
                  anchor="w").pack(fill="x", padx=18, pady=(16, 2))
         tk.Label(self, text="La barra ordena y completa; el contenido de las clases lo escribes tú.",
-                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=(familia, 9), anchor="w").pack(fill="x", padx=18)
+                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w").pack(fill="x", padx=18)
         self.unidad = ttk.Combobox(self, values=list(self.unidades), state="readonly", width=60,
-                                   style="Barra.TCombobox", font=(familia, 10))
+                                   style="Barra.TCombobox", font=letra(10))
         self.unidad.pack(padx=18, pady=(10, 6), anchor="w")
         self.unidad.bind("<<ComboboxSelected>>", lambda _e: self._mostrar_accion())
         self.accion = tk.StringVar(value="esqueleto")
         for valor, texto in self.ACCIONES:
             tk.Radiobutton(self, text=texto, variable=self.accion, value=valor, bg=COLOR_FONDO,
                            fg=COLOR_TEXTO, selectcolor=COLOR_BOTON, activebackground=COLOR_FONDO,
-                           activeforeground=COLOR_TEXTO, font=(familia, 10), anchor="w",
+                           activeforeground=COLOR_TEXTO, font=letra(10), anchor="w",
                            command=self._mostrar_accion).pack(fill="x", padx=18)
         self.panel = tk.Frame(self, bg=COLOR_FONDO)
         self.panel.pack(fill="x", padx=18, pady=(8, 0))
-        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=(familia, 9),
+        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=letra(9),
                               anchor="w", justify="left", wraplength=self.ANCHO - 40)
         self.aviso.pack(fill="x", padx=18, pady=(6, 0))
         pie = tk.Frame(self, bg=COLOR_FONDO)
@@ -2859,10 +4035,11 @@ class VentanaPlanificar(tk.Toplevel):
     def _campo(self, padre, etiqueta: str, valor: str = "", ancho: int = 12) -> tk.Entry:
         fila = tk.Frame(padre, bg=COLOR_FONDO)
         fila.pack(fill="x", pady=2)
-        tk.Label(fila, text=etiqueta, bg=COLOR_FONDO, fg=COLOR_TENUE, font=("Segoe UI", 9),
+        tk.Label(fila, text=etiqueta, bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
                  width=10, anchor="w").pack(side="left")
         entrada = tk.Entry(fila, width=ancho, bg=COLOR_BOTON, fg=COLOR_TEXTO, bd=0,
-                           insertbackground=COLOR_TEXTO, font=("Segoe UI", 10))
+                           insertbackground=COLOR_TEXTO, font=letra(10))
+        estilo_campo(entrada)
         entrada.insert(0, valor)
         entrada.pack(side="left", ipady=3)
         return entrada
@@ -2882,13 +4059,13 @@ class VentanaPlanificar(tk.Toplevel):
             fila = tk.Frame(self.panel, bg=COLOR_FONDO)
             fila.pack(fill="x")
             self.texto_planilla = tk.Label(fila, text="Ninguna planilla elegida", bg=COLOR_FONDO,
-                                           fg=COLOR_TENUE, font=("Segoe UI", 9), anchor="w")
+                                           fg=COLOR_TENUE, font=letra(9), anchor="w")
             self.texto_planilla.pack(side="left", fill="x", expand=True)
             boton_texto(fila, "Elegir…", self._elegir_planilla).pack(side="right")
             boton_texto(fila, "Plantilla", self._plantilla).pack(side="right", padx=(0, 6))
         else:
             tk.Label(self.panel, text="Marca los OA, habilidades y clases que quieres completar.",
-                     bg=COLOR_FONDO, fg=COLOR_TENUE, font=("Segoe UI", 9), anchor="w").pack(fill="x")
+                     bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w").pack(fill="x")
             boton_texto(self.panel, "Cargar OA y clases de la unidad", self._cargar).pack(anchor="w", pady=4)
             self.cuerpo = tk.Frame(self.panel, bg=COLOR_BOTON)
             self.cuerpo.pack(fill="x")
@@ -2896,11 +4073,11 @@ class VentanaPlanificar(tk.Toplevel):
             fila = tk.Frame(self.panel, bg=COLOR_FONDO)
             fila.pack(fill="x", pady=(6, 0))
             tk.Label(fila, text="DUA:", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                     font=("Segoe UI", 9)).pack(side="left", padx=(0, 6))
+                     font=letra(9)).pack(side="left", padx=(0, 6))
             for texto, valor in (("Habitual", "habitual"), ("Con TIC", "tic"), ("No tocar", "ninguno")):
                 tk.Radiobutton(fila, text=texto, variable=self.dua, value=valor, bg=COLOR_FONDO,
                                fg=COLOR_TEXTO, selectcolor=COLOR_BOTON, activebackground=COLOR_FONDO,
-                               activeforeground=COLOR_TEXTO, font=("Segoe UI", 10)).pack(side="left")
+                               activeforeground=COLOR_TEXTO, font=letra(10)).pack(side="left")
         colocar_junto_a_la_barra(self, self.maestra)
 
     def _elegir_planilla(self) -> None:
@@ -3058,14 +4235,14 @@ class VentanaCorreo(tk.Toplevel):
         self.config_correo = self.perfil.get("correo") or {}
         familia = "Segoe UI"
         tk.Label(self, text="Enviar al equipo PIE", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(familia, 13, "bold"), anchor="w").pack(fill="x", padx=18, pady=(16, 2))
+                 font=letra(13, "bold"), anchor="w").pack(fill="x", padx=18, pady=(16, 2))
         self.destino = self.config_correo.get("pie") or self.DESTINO_PIE
-        self.estado = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=(familia, 9),
+        self.estado = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
                                anchor="w", justify="left", wraplength=self.ANCHO - 40)
         self.estado.pack(fill="x", padx=18)
         self.cuerpo = tk.Frame(self, bg=COLOR_FONDO)
         self.cuerpo.pack(fill="x", padx=18, pady=(8, 0))
-        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=(familia, 9),
+        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=letra(9),
                               anchor="w", justify="left", wraplength=self.ANCHO - 40)
         self.aviso.pack(fill="x", padx=18, pady=(6, 0))
         self.pie = tk.Frame(self, bg=COLOR_FONDO)
@@ -3097,10 +4274,11 @@ class VentanaCorreo(tk.Toplevel):
     def _caja(self, etiqueta: str, valor: str = "", secreto: bool = False) -> tk.Entry:
         fila = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
         fila.pack(fill="x", pady=2)
-        tk.Label(fila, text=etiqueta, bg=COLOR_FONDO, fg=COLOR_TENUE, font=("Segoe UI", 9),
+        tk.Label(fila, text=etiqueta, bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
                  width=14, anchor="w").pack(side="left")
         entrada = tk.Entry(fila, bg=COLOR_BOTON, fg=COLOR_TEXTO, bd=0, insertbackground=COLOR_TEXTO,
-                           font=("Segoe UI", 10), show="•" if secreto else "")
+                           font=letra(10), show="•" if secreto else "")
+        estilo_campo(entrada)
         entrada.insert(0, valor)
         entrada.pack(side="left", fill="x", expand=True, ipady=3)
         return entrada
@@ -3149,7 +4327,7 @@ class VentanaCorreo(tk.Toplevel):
         fila = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
         fila.pack(fill="x")
         self.texto_archivos = tk.Label(fila, text="Ningún archivo elegido", bg=COLOR_FONDO,
-                                       fg=COLOR_TENUE, font=("Segoe UI", 9), anchor="w",
+                                       fg=COLOR_TENUE, font=letra(9), anchor="w",
                                        justify="left", wraplength=self.ANCHO - 160)
         self.texto_archivos.pack(side="left", fill="x", expand=True)
         boton_texto(fila, "Elegir archivos…", self._elegir).pack(side="right")
@@ -3159,7 +4337,8 @@ class VentanaCorreo(tk.Toplevel):
         self.caja_asunto = self._caja("Asunto:")
         self.caja_asunto.bind("<KeyRelease>", self._asunto_escrito)
         self.mensaje = tk.Text(self.cuerpo, height=6, wrap="word", bg=COLOR_BOTON, fg=COLOR_TEXTO,
-                               bd=0, insertbackground=COLOR_TEXTO, font=("Segoe UI", 10), padx=8, pady=6)
+                               bd=0, insertbackground=COLOR_TEXTO, font=letra(10), padx=8, pady=6)
+        estilo_campo(self.mensaje)
         self.mensaje.pack(fill="x", pady=(6, 0))
         self.mensaje.bind("<KeyRelease>", self._mensaje_escrito)
         boton_texto(self.pie, "Ver vista previa", self._continuar, principal=True).pack(side="right")
@@ -3290,13 +4469,13 @@ class VentanaMensajes(tk.Toplevel):
                    foreground=[("readonly", COLOR_TEXTO)])
         self.after(300, self._sondear)
         tk.Label(self, text="Mensajes del equipo", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(familia, 13, "bold"), anchor="w").pack(fill="x", padx=18, pady=(16, 2))
-        self.estado = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=(familia, 9),
+                 font=letra(13, "bold"), anchor="w").pack(fill="x", padx=18, pady=(16, 2))
+        self.estado = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
                                anchor="w", justify="left", wraplength=self.ANCHO - 40)
         self.estado.pack(fill="x", padx=18)
         self.cuerpo = tk.Frame(self, bg=COLOR_FONDO)
         self.cuerpo.pack(fill="x", padx=18, pady=(8, 0))
-        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=(familia, 9),
+        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=letra(9),
                               anchor="w", justify="left", wraplength=self.ANCHO - 40)
         self.aviso.pack(fill="x", padx=18, pady=(6, 0))
         self.pie = tk.Frame(self, bg=COLOR_FONDO)
@@ -3325,7 +4504,7 @@ class VentanaMensajes(tk.Toplevel):
         fila = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
         fila.pack(fill="x")
         self.caja_clave = tk.Entry(fila, bg=COLOR_BOTON, fg=COLOR_TEXTO, bd=0, insertbackground=COLOR_TEXTO,
-                                   font=("Consolas", 9))
+                                   font=letra(9, familia="Consolas"))
         self.caja_clave.pack(side="left", fill="x", expand=True, ipady=4)
         boton_texto(fila, "Crear nueva", self._crear_clave).pack(side="right", padx=(6, 0))
         boton_texto(self.pie, "Guardar clave", self._guardar_clave, principal=True).pack(side="right")
@@ -3370,22 +4549,22 @@ class VentanaMensajes(tk.Toplevel):
         marco = tk.Frame(self.cuerpo, bg=COLOR_BOTON)
         marco.pack(fill="x")
         self.texto = tk.Text(marco, height=12, wrap="word", bg=COLOR_BOTON, fg=COLOR_TEXTO, bd=0,
-                             font=(familia, 10), padx=8, pady=6, state="disabled", cursor="arrow")
-        barra = tk.Scrollbar(marco, command=self.texto.yview)
+                             font=letra(10), padx=8, pady=6, state="disabled", cursor="arrow")
+        barra = BarraOscura(marco, command=self.texto.yview)
         self.texto.configure(yscrollcommand=barra.set)
         barra.pack(side="right", fill="y")
         self.texto.pack(side="left", fill="x", expand=True)
         self.texto.tag_configure("yo", foreground=COLOR_ACENTO)
         self.texto.tag_configure("hora", foreground=COLOR_TENUE)
-        self.texto.tag_configure("pendiente", foreground=COLOR_ALERTA)
+        self.texto.tag_configure("pendiente", foreground=COLOR_ERROR)
         fila = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
         fila.pack(fill="x", pady=(8, 0))
-        tk.Label(fila, text="Para:", bg=COLOR_FONDO, fg=COLOR_TENUE, font=(familia, 9)).pack(side="left")
+        tk.Label(fila, text="Para:", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9)).pack(side="left")
         self.destino = ttk.Combobox(fila, state="readonly", width=24, style="Barra.TCombobox",
-                                    font=(familia, 10))
+                                    font=letra(10))
         self.destino.pack(side="left", padx=(6, 0))
         self.entrada = tk.Entry(self.cuerpo, bg=COLOR_BOTON, fg=COLOR_TEXTO, bd=0,
-                                insertbackground=COLOR_TEXTO, font=(familia, 10))
+                                insertbackground=COLOR_TEXTO, font=letra(10))
         self.entrada.pack(fill="x", pady=(6, 0), ipady=5)
         self.entrada.bind("<Return>", lambda _e: self._enviar())
         boton_texto(self.pie, "Enviar", self._enviar, principal=True).pack(side="right")
@@ -3489,6 +4668,7 @@ class VentanaElegirClase(tk.Toplevel):
     """
 
     ANCHO = 600
+    NO_HUBO = "— no hubo clase (feriado…): no volver a mostrarlo —"
 
     def __init__(self, consola):
         super().__init__(consola.maestra)
@@ -3514,10 +4694,10 @@ class VentanaElegirClase(tk.Toplevel):
         self.option_add("*TCombobox*Listbox.selectForeground", COLOR_FONDO)
         self.pendientes = [it for it in agrupar_items(consola.items)["no_pude"] if it.get("opciones")]
         tk.Label(self, text="Elige la clase de cada bloque", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(familia, 13, "bold"), anchor="w").pack(fill="x", padx=18, pady=(16, 2))
+                 font=letra(13, "bold"), anchor="w").pack(fill="x", padx=18, pady=(16, 2))
         tk.Label(self, text="Estas son las clases de tu planificación más cercanas a esa fecha. "
                             "Lo que dejes en «no declarar» no se toca.",
-                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=(familia, 9), anchor="w", justify="left",
+                 bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w", justify="left",
                  wraplength=self.ANCHO - 40).pack(fill="x", padx=18, pady=(0, 8))
         self.combos: dict[str, ttk.Combobox] = {}
         cuerpo = tk.Frame(self, bg=COLOR_BOTON)
@@ -3526,19 +4706,21 @@ class VentanaElegirClase(tk.Toplevel):
             fila = tk.Frame(cuerpo, bg=COLOR_BOTON)
             fila.pack(fill="x", padx=12, pady=(8, 0))
             tk.Label(fila, text=it["titulo"], bg=COLOR_BOTON, fg=COLOR_TEXTO,
-                     font=(familia, 10, "bold"), anchor="w", justify="left",
+                     font=letra(10, "bold"), anchor="w", justify="left",
                      wraplength=self.ANCHO - 70).pack(fill="x")
             que = explicar_motivo(it["motivo"] or it["detalle"])["que"]
-            tk.Label(fila, text=que, bg=COLOR_BOTON, fg=COLOR_TENUE, font=(familia, 9),
+            tk.Label(fila, text=que, bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9),
                      anchor="w", justify="left", wraplength=self.ANCHO - 70).pack(fill="x")
             valores = ["— no declarar este bloque —"] + [o["texto"] for o in it["opciones"]]
+            if it.get("sin_clase"):           # un feriado: que no se vuelva a ofrecer
+                valores.append(self.NO_HUBO)
             combo = ttk.Combobox(fila, values=valores, state="readonly", style="Barra.TCombobox",
-                                 font=(familia, 10), width=max(len(v) for v in valores) + 2)
+                                 font=letra(10), width=max(len(v) for v in valores) + 2)
             combo.current(0)
             combo.pack(fill="x", pady=(4, 0))
             self.combos[it["clave"]] = combo
         tk.Frame(cuerpo, bg=COLOR_BOTON, height=10).pack()
-        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=(familia, 9),
+        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=letra(9),
                               anchor="w")
         self.aviso.pack(fill="x", padx=18, pady=(6, 0))
         pie = tk.Frame(self, bg=COLOR_FONDO)
@@ -3550,11 +4732,26 @@ class VentanaElegirClase(tk.Toplevel):
 
     def _declarar(self) -> None:
         elecciones: dict[str, str] = {}
+        sin_clase = []
         for it in self.pendientes:
-            indice = self.combos[it["clave"]].current()
-            if indice > 0:
+            combo = self.combos[it["clave"]]
+            indice = combo.current()
+            if combo.get() == self.NO_HUBO:
+                sin_clase.append(it)
+            elif indice > 0:
                 elecciones[it["clave"]] = it["opciones"][indice - 1]["id"]
+        for it in sin_clase:
+            marca = it["sin_clase"]
+            ignorar_en_sin_clases(SIN_CLASES, marca["campo"], marca["clave"], marca["titulo"])
+            registrar(f"sin clases: «{marca['titulo']}» queda como clase que no se hizo")
+        if sin_clase:
+            refrescar = getattr(self.consola.maestra, "_refrescar_firmas", None)
+            if callable(refrescar):
+                refrescar()
         if not elecciones:
+            if sin_clase:                   # solo se marcaron clases que no se hicieron: no hay nada que declarar
+                self.destroy()
+                return
             self.aviso.configure(text="No elegiste ninguna clase: elige al menos una o cancela.")
             return
         consola = self.consola
@@ -3609,20 +4806,20 @@ class VentanaTickets(tk.Toplevel):
         cabecera.pack(fill="x", padx=18, pady=(16, 2))
         if herramienta.get("icono"):
             tk.Label(cabecera, text=herramienta["icono"], bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                     font=("Segoe UI Emoji", 16)).pack(side="left", padx=(0, 8))
+                     font=letra(16, familia="Segoe UI Emoji")).pack(side="left", padx=(0, 8))
         tk.Label(cabecera, text=titulo, bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                 font=(familia, 13, "bold")).pack(side="left")
-        tk.Label(self, text=ayuda, bg=COLOR_FONDO, fg=COLOR_TENUE, font=(familia, 9),
+                 font=letra(13, "bold")).pack(side="left")
+        tk.Label(self, text=ayuda, bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
                  anchor="w", justify="left", wraplength=self.ANCHO - 40).pack(fill="x", padx=18,
                                                                               pady=(0, 8))
         controles = tk.Frame(self, bg=COLOR_FONDO)
         controles.pack(fill="x", padx=18, pady=(0, 6))
         self.contador = tk.Label(controles, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                                 font=(familia, 9))
+                                 font=letra(9))
         self.contador.pack(side="right")
         for texto, valor in (("Seleccionar todo", True), ("Ninguno", False)):
             enlace = tk.Label(controles, text=texto, bg=COLOR_FONDO, fg=COLOR_ACENTO,
-                              font=(familia, 9, "underline"), cursor="hand2", takefocus=True,
+                              font=letra(9, "underline"), cursor="hand2", takefocus=True,
                               highlightthickness=1, highlightbackground=COLOR_FONDO,
                               highlightcolor=COLOR_TEXTO)
             enlace.pack(side="left", padx=(0, 14))
@@ -3644,21 +4841,22 @@ class VentanaTickets(tk.Toplevel):
             fila = tk.Frame(self, bg=COLOR_FONDO)
             fila.pack(fill="x", padx=18, pady=(8, 0))
             tk.Label(fila, text="Además, este día (día/mes/año):", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                     font=(familia, 9)).pack(side="left", padx=(0, 6))
+                     font=letra(9)).pack(side="left", padx=(0, 6))
             self.campo_fecha = tk.Entry(fila, textvariable=self.texto_fecha, bg=COLOR_BOTON,
-                                        fg=COLOR_TEXTO, bd=0, font=(familia, 10), width=12,
+                                        fg=COLOR_TEXTO, bd=0, font=letra(10), width=12,
                                         insertbackground=COLOR_TEXTO, highlightthickness=1,
                                         highlightbackground=COLOR_BOTON,
                                         highlightcolor=COLOR_ACENTO)
+            estilo_campo(self.campo_fecha)
             self.campo_fecha.pack(side="left", ipady=3)
             self.campo_fecha.bind("<KeyRelease>", lambda _e: self._actualizar())
             self.campo_fecha.bind("<Return>", lambda _e: self._aceptar())
 
         self.resumen = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                                font=(familia, 10, "bold"), anchor="w", justify="left",
+                                font=letra(10, "bold"), anchor="w", justify="left",
                                 wraplength=self.ANCHO - 40)
         self.resumen.pack(fill="x", padx=18, pady=(10, 0))
-        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=(familia, 9),
+        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=letra(9),
                               anchor="w", justify="left", wraplength=self.ANCHO - 40)
         self.aviso.pack(fill="x", padx=18)
         pie = tk.Frame(self, bg=COLOR_FONDO)
@@ -3718,6 +4916,999 @@ class VentanaTickets(tk.Toplevel):
             abrir({**nuevo, "_confirmado": True}, maestra)
 
 
+def fila_accion(padre, texto: str, accion) -> tk.Label:
+    """Una fila clicable (también con Enter o espacio) del tamaño del ancho disponible."""
+    fila = tk.Label(padre, text=f"  {texto}", bg=COLOR_BOTON, fg=COLOR_TEXTO, font=letra(10), anchor="w",
+                    cursor="hand2", pady=6, takefocus=True, highlightthickness=1,
+                    highlightbackground=COLOR_BOTON, highlightcolor=COLOR_ACENTO)
+    fila.pack(fill="x", pady=2)
+    fila.bind("<Button-1>", lambda _e: accion())
+    for tecla in ("<Return>", "<space>"):
+        fila.bind(tecla, lambda _e: (accion(), "break")[1])
+    fila.bind("<Enter>", lambda _e: fila.configure(bg=COLOR_HOVER))
+    fila.bind("<Leave>", lambda _e: fila.configure(bg=COLOR_BOTON))
+    return fila
+
+
+class VentanaCerrar(VentanaBase):
+    """«¿Esconder o cerrar la barra?»: la ✕ ya no la cierra de golpe."""
+
+    ANCHO = 380
+
+    def __init__(self, barra):
+        super().__init__(barra, "¿Esconder o cerrar la barra?",
+                         "Escondida queda como una lengüeta en el borde y sigue revisando tu libro de clases. "
+                         "Cerrada deja de revisar el libro y de recibir archivos arrastrados hasta que la abras de "
+                         "nuevo (la subida automática del buzón sigue igual).",
+                         titulo_ventana="Barra Profe")
+        self.barra = barra
+        if equipo_compartido() and not getattr(barra, "bloqueada", False):
+            # En un equipo con varios profesores, al irse conviene bloquearla: el siguiente entra con su PIN
+            fila_accion(self.cuerpo, "🔒  Bloquear y esconder (el siguiente profesor entra con su PIN)", self._bloquear)
+        self.boton_esconder = self.boton("Esconder", self._esconder, principal=True)
+        self.boton("Cerrar la barra", self._cerrar)
+        self.boton("Cancelar", self.destroy)
+        self.colocar()
+        try:
+            self.focus_force()
+            self.boton_esconder.focus_set()
+        except tk.TclError:
+            pass
+
+    def _esconder(self) -> None:
+        barra = self.barra
+        self.destroy()
+        barra._plegar(forzar=True)
+
+    def _bloquear(self) -> None:
+        barra = self.barra
+        self.destroy()
+        barra.bloquear()
+        barra._plegar(forzar=True)
+
+    def _cerrar(self) -> None:
+        barra = self.barra
+        self.destroy()
+        barra.destroy()
+
+
+def opciones_segmentadas(padre, titulo: str, opciones: list[tuple], actual, al_elegir) -> tk.Frame:
+    """«Título: [ uno ] [ dos ] [ tres ]» con la opción elegida resaltada (también se usa con el teclado)."""
+    marco = tk.Frame(padre, bg=COLOR_FONDO)
+    marco.pack(fill="x", pady=(10, 0))
+    tk.Label(marco, text=titulo, bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w").pack(fill="x")
+    fila = tk.Frame(marco, bg=COLOR_FONDO)
+    fila.pack(anchor="w", pady=(4, 0))
+    for valor, texto in opciones:
+        elegida = valor == actual
+        b = tk.Label(fila, text=f"  {texto}  ", bg=COLOR_ACENTO if elegida else COLOR_BOTON,
+                     fg=COLOR_SOBRE_ACENTO if elegida else COLOR_TEXTO, font=letra(10), cursor="hand2", pady=4,
+                     takefocus=True, highlightthickness=1, highlightbackground=COLOR_FONDO,
+                     highlightcolor=COLOR_ACENTO)
+        b.pack(side="left", padx=(0, 4))
+        b.bind("<Button-1>", lambda _e, v=valor: al_elegir(v))
+        for tecla in ("<Return>", "<space>"):
+            b.bind(tecla, lambda _e, v=valor: (al_elegir(v), "break")[1])
+    return marco
+
+
+def casilla(padre, texto: str, variable: tk.BooleanVar, al_cambiar, ancho: int = 0) -> tk.Checkbutton:
+    c = tk.Checkbutton(padre, text=texto, variable=variable, command=al_cambiar, bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                       selectcolor=COLOR_BOTON, activebackground=COLOR_FONDO, activeforeground=COLOR_TEXTO,
+                       font=letra(10), anchor="w", justify="left", wraplength=ancho or 0)
+    c.pack(fill="x", pady=(6, 0))
+    return c
+
+
+class MarcoDesplazable(tk.Frame):
+    """Un marco con alto máximo y barra de desplazamiento oscura: el contenido va en `self.interior`."""
+
+    def __init__(self, padre, alto_max: int):
+        super().__init__(padre, bg=COLOR_FONDO)
+        self.alto_max = alto_max
+        self.canvas = tk.Canvas(self, bg=COLOR_FONDO, highlightthickness=0, bd=0, height=10)
+        self.barra = BarraOscura(self, command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.barra.set)
+        self.interior = tk.Frame(self.canvas, bg=COLOR_FONDO)
+        self._ventana = self.canvas.create_window((0, 0), window=self.interior, anchor="nw")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.interior.bind("<Configure>", lambda _e: self._ajustar())
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self._ventana, width=e.width))
+
+    def _ajustar(self) -> None:
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        alto = self.interior.winfo_reqheight()
+        self.canvas.configure(height=min(alto, self.alto_max))
+        if alto > self.alto_max:
+            if not self.barra.winfo_ismapped():
+                self.barra.pack(side="right", fill="y")
+        elif self.barra.winfo_ismapped():
+            self.barra.pack_forget()
+
+    def _rueda(self, evento) -> None:
+        if self.barra.winfo_ismapped():
+            self.canvas.yview_scroll(int(-evento.delta / 120), "units")
+
+    def activar_rueda(self) -> None:
+        """La rueda del mouse desplaza la lista desde cualquier fila (se llama después de llenarla)."""
+        def ligar(widget):
+            widget.bind("<MouseWheel>", self._rueda, add="+")
+            for hijo in widget.winfo_children():
+                ligar(hijo)
+        ligar(self.canvas)
+
+
+def alternar_favorito_en(botones: list[dict], nombre: str) -> bool:
+    """Suma o quita `nombre` de ★ Favoritos en la lista de botones. Los favoritos que había (también los iniciales)
+    quedan escritos. Devuelve True si quedó como favorito."""
+    actuales = {b.get("nombre") for b in Barra._favoritos([b for b in botones if not b.get("oculto")])}
+    nuevos = actuales ^ {nombre}
+    for b in botones:
+        if b.get("nombre") in nuevos:
+            b["favorito"] = True
+        else:
+            b.pop("favorito", None)
+    if not nuevos:          # sin ningún favorito queda escrito igual, para no volver a los iniciales
+        for b in botones:
+            if b.get("nombre") == nombre:
+                b["favorito"] = False
+    return nombre in nuevos
+
+
+def archivos_de_respaldo() -> dict[str, str]:
+    """Qué entra en el respaldo de configuración y dónde vive en este PC. Nunca contraseñas (están en el
+    Administrador de credenciales de Windows) ni claves de IA ni el perfil de Webclass (lleva el RUT)."""
+    from barra_utiles import ruta_preferencia_subida
+    mapa = {"personal/herramientas.json": os.path.join(rutas.PERSONAL, "herramientas.json"),
+            "datos/apariencia.json": TEMA, "datos/preferencias.json": PREFERENCIAS, "datos/lista.json": TAREAS,
+            "datos/posicion.json": ESTADO}
+    if PERFIL:
+        mapa["personal/subida.json"] = ruta_preferencia_subida(rutas.PERSONAL, PERFIL)
+    for ext in (".mp3", ".wav"):
+        mapa[f"personal/inicio{ext}"] = os.path.join(rutas.PERSONAL, f"inicio{ext}")
+    if PERFIL:
+        plan = os.path.join(rutas.PERSONAL, "planificador", PERFIL)
+        mapa["planificador/perfil.json"] = os.path.join(plan, "perfil.json")
+        for ext in (".png", ".jpg", ".jpeg"):
+            mapa[f"planificador/logo{ext}"] = os.path.join(plan, f"logo{ext}")
+    return mapa
+
+
+def orden_de_la_barra() -> tuple[str, str, str]:
+    """(programa, argumentos, carpeta) para abrir ESTA barra desde un acceso directo de Windows."""
+    piton = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    return (piton if os.path.isfile(piton) else sys.executable,
+            f'"{os.path.join(CARPETA, "barra_profe.pyw")}"', CARPETA)
+
+
+class VentanaCuenta(VentanaBase):
+    """Configurar la cuenta de Webclass (o agregar otro profesor) sin consola.
+
+    Paso 1: RUT, contraseña y nombre; la barra entra a Webclass y busca los cursos y unidades. Paso 2: el curso del
+    que es profesor jefe. La contraseña va directo al Administrador de credenciales de Windows: nunca queda en un
+    archivo ni pasa por la línea de comandos.
+    """
+
+    ANCHO = 420
+
+    def __init__(self, barra, modo: str = "agregar"):
+        primera = not DOCENTES
+        super().__init__(barra, "Configura tu cuenta" if primera else "Agregar un profesor",
+                         "Con tu RUT y tu contraseña de Webclass busco tus cursos y unidades. La contraseña queda "
+                         "en el Administrador de credenciales de Windows, no en un archivo.",
+                         icono="👤", titulo_ventana="Cuenta de Webclass")
+        self.barra = barra
+        self.primera = primera
+        self.preparada: dict | None = None
+        self.rut, self.clave, self.nombre = tk.StringVar(), tk.StringVar(), tk.StringVar()
+        self.jefatura = tk.StringVar(value="")
+        self._paso_datos()
+        self.colocar()
+
+    def _limpiar(self) -> None:
+        for hijo in self.cuerpo.winfo_children():
+            hijo.destroy()
+        self.limpiar_botones()
+
+    def _campo(self, etiqueta: str, variable: tk.StringVar, secreto: bool = False, ayuda: str = "") -> tk.Entry:
+        tk.Label(self.cuerpo, text=etiqueta, bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10, "bold"),
+                 anchor="w").pack(fill="x", pady=(8, 2))
+        campo = tk.Entry(self.cuerpo, textvariable=variable, font=letra(10), show="•" if secreto else "")
+        estilo_campo(campo)
+        campo.pack(fill="x", ipady=4)
+        if ayuda:
+            tk.Label(self.cuerpo, text=ayuda, bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w",
+                     justify="left", wraplength=self.ancho_texto()).pack(fill="x")
+        return campo
+
+    def _paso_datos(self) -> None:
+        self._limpiar()
+        primero = self._campo("RUT", self.rut, ayuda="Con guion y dígito verificador, sin puntos: 12345678-9")
+        self._campo("Contraseña de Webclass", self.clave, secreto=True)
+        self._campo("Tu nombre como aparece en Webclass", self.nombre, ayuda="Con este nombre se firman los "
+                                                                             "recursos que subes.")
+        self.aviso = tk.Label(self.cuerpo, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=letra(9), anchor="w",
+                              justify="left", wraplength=self.ancho_texto())
+        self.aviso.pack(fill="x", pady=(8, 0))
+        self.boton_conectar = self.boton("Conectar y buscar mis cursos", self._conectar, principal=True)
+        self.boton("Cancelar", self.destroy)
+        primero.focus_set()
+
+    def _conectar(self) -> None:
+        rut, clave, nombre = self.rut.get().strip(), self.clave.get(), self.nombre.get().strip()
+        if not re.fullmatch(r"\d{7,8}-[\dkK]", rut):
+            self.aviso.configure(text="El RUT va con guion y dígito verificador, sin puntos (ej. 12345678-9).")
+            return
+        if not clave or not nombre:
+            self.aviso.configure(text="Falta la contraseña o tu nombre.")
+            return
+        self.aviso.configure(text="Conectando con Webclass y buscando tus cursos… (puede tardar un minuto)",
+                             fg=COLOR_TENUE)
+        self.boton_conectar.configure(text="  Conectando…  ")
+        self.boton_conectar.unbind("<Button-1>")
+
+        def trabajar() -> dict:
+            import configurar
+            return configurar.preparar_cuenta(rut, clave)
+        self.en_segundo_plano(trabajar, lambda resultado, error: self._conectado(
+            resultado, (str(error) or error.__class__.__name__) if error else ""))
+
+    def _conectado(self, preparada: dict | None, error: str) -> None:
+        if preparada is None:
+            registrar("no se pudo configurar la cuenta", error)
+            self._paso_datos()
+            self.aviso.configure(text=f"No pude entrar: {error}", fg=COLOR_ERROR)
+            return
+        self.preparada = preparada
+        self._limpiar()
+        cursos = sorted(preparada.get("curso_ids", {}))
+        tk.Label(self.cuerpo, text=f"✓ Encontré {len(cursos)} cursos y {len(preparada.get('unidades', []))} "
+                                   f"unidades.", bg=COLOR_FONDO, fg=COLOR_OK, font=letra(10, "bold"),
+                 anchor="w").pack(fill="x")
+        tk.Label(self.cuerpo, text="¿De qué curso eres profesor jefe?", bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                 font=letra(10), anchor="w").pack(fill="x", pady=(10, 4))
+        marco = tk.Frame(self.cuerpo, bg=COLOR_BOTON)
+        marco.pack(fill="x")
+        for valor, texto in [("", "De ninguno"), *[(c, c) for c in cursos]]:
+            tk.Radiobutton(marco, text=texto, value=valor, variable=self.jefatura, bg=COLOR_BOTON, fg=COLOR_TEXTO,
+                           selectcolor=COLOR_FONDO, activebackground=COLOR_BOTON, activeforeground=COLOR_ACENTO,
+                           font=letra(10), anchor="w", bd=0, highlightthickness=0
+                           ).pack(fill="x", padx=14, pady=(4, 0))
+        tk.Frame(marco, bg=COLOR_BOTON, height=6).pack()
+        self.aviso = tk.Label(self.cuerpo, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=letra(9), anchor="w",
+                              justify="left", wraplength=self.ancho_texto())
+        self.aviso.pack(fill="x", pady=(8, 0))
+        self.boton("Guardar", self._guardar, principal=True)
+        self.boton("Volver", self._paso_datos)
+        self.colocar(self.winfo_y())
+
+    def _guardar(self) -> None:
+        try:
+            import configurar
+            clave = configurar.guardar_cuenta(self.preparada, self.clave.get(), self.nombre.get(), self.jefatura.get())
+        except Exception as exc:  # noqa: BLE001
+            registrar("no se pudo guardar la cuenta", traceback.format_exc())
+            self.aviso.configure(text=f"No se pudo guardar: {exc}")
+            return
+        self.clave.set("")                     # la contraseña no queda en la ventana
+        registrar(f"cuenta configurada: {clave}")
+        barra, primera, nombre = self.barra, self.primera, self.nombre.get().strip()
+        self.destroy()
+        globals()["DOCENTES"] = docentes_registrados()
+
+        def usar(_clave: str = clave) -> None:
+            if primera or clave == PERFIL or messagebox.askyesno(
+                    "Barra Profe", f"Quedó configurada la cuenta de {nombre}.\n\n¿Usar la barra con esa cuenta ahora?"):
+                if hasattr(barra, "bloqueada"):
+                    barra.bloqueada = False        # acaba de entrar con su contraseña de Webclass
+                    DESBLOQUEO["activo"] = True
+                elegir_docente(clave, barra)
+        if equipo_compartido() and not tiene_pin(ruta_pin(rutas.PERSONAL, clave)):
+            # Ya hay varios profesores en este equipo: el nuevo crea su PIN (su contraseña se acaba de comprobar)
+            VentanaPin(barra, clave, usar, modo="crear")
+        else:
+            usar()
+
+
+class VentanaBoton(VentanaBase):
+    """Agregar o editar un botón de la barra: una página web, una carpeta o un archivo."""
+
+    TIPOS = (("url", "Página web"), ("carpeta", "Carpeta"), ("programa", "Archivo o programa"))
+    ICONOS = ("🔗", "🌐", "📁", "📄", "📊", "📝", "📚", "🎓", "✉️", "🗂️", "🧮", "⭐", "🎨", "🎵", "📅", "🖨️")
+    ANCHO = 440
+
+    def __init__(self, editor, boton: dict | None, borrador: dict | None = None):
+        super().__init__(editor.winfo_toplevel(), "Editar botón" if boton else "Agregar un botón",
+                         "Los botones de la barra se guardan solo para ti." if boton is None else
+                         "Cambia lo que quieras; lo demás queda igual.", icono="✏️", titulo_ventana="Botón de la barra")
+        self.editor, self.original = editor, boton
+        base = {**(boton or {}), **(borrador or {})}
+        tipo_original = base.get("tipo", "url")
+        self.editable = boton is None or tipo_original in ("url", "carpeta", "programa")
+        self.tipo = tk.StringVar(value=tipo_original if self.editable else "url")
+        self.nombre = tk.StringVar(value=base.get("nombre", ""))
+        self.icono = tk.StringVar(value=base.get("icono", "🔗"))
+        self.grupo = tk.StringVar(value=base.get("grupo", "Mis enlaces"))
+        self.destino = tk.StringVar(value=base.get("destino", "") if self.editable else "")
+        self.ayuda = tk.StringVar(value=base.get("ayuda", ""))
+
+        if boton is None:
+            opciones_segmentadas(self.cuerpo, "¿Qué abre?", list(self.TIPOS), self.tipo.get(), self._elegir_tipo)
+        self._campo("Nombre", self.nombre)
+        tk.Label(self.cuerpo, text="Ícono", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10, "bold"),
+                 anchor="w").pack(fill="x", pady=(8, 2))
+        fila = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
+        fila.pack(fill="x")
+        campo = tk.Entry(fila, textvariable=self.icono, width=4, font=letra(12, familia="Segoe UI Emoji"))
+        estilo_campo(campo)
+        campo.pack(side="left", ipady=2)
+        for icono in self.ICONOS:
+            e = tk.Label(fila, text=icono, bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(11, familia="Segoe UI Emoji"),
+                         cursor="hand2")
+            e.pack(side="left", padx=1)
+            e.bind("<Button-1>", lambda _e, i=icono: self.icono.set(i))
+        tk.Label(self.cuerpo, text="Grupo", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10, "bold"),
+                 anchor="w").pack(fill="x", pady=(8, 2))
+        grupos = sorted({b.get("grupo") for b in editor.botones if b.get("grupo")} | {"Mis enlaces"})
+        combo = ttk.Combobox(self.cuerpo, textvariable=self.grupo, values=grupos, font=letra(10),
+                             style="Barra.TCombobox")
+        combo.pack(fill="x")
+        if self.editable:
+            self.etiqueta_destino = tk.Label(self.cuerpo, text="", bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                                             font=letra(10, "bold"), anchor="w")
+            self.etiqueta_destino.pack(fill="x", pady=(8, 2))
+            fila = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
+            fila.pack(fill="x")
+            campo = tk.Entry(fila, textvariable=self.destino, font=letra(10))
+            estilo_campo(campo)
+            campo.pack(side="left", fill="x", expand=True, ipady=4)
+            self.boton_elegir = boton_texto(fila, "Elegir…", self._elegir_destino)
+            self.boton_elegir.pack(side="left", padx=(6, 0))
+            self._elegir_tipo(self.tipo.get(), repintar=False)
+        self._campo("Ayuda (opcional)", self.ayuda)
+        self.aviso = tk.Label(self.cuerpo, text="", bg=COLOR_FONDO, fg=COLOR_ERROR, font=letra(9), anchor="w",
+                              justify="left", wraplength=self.ancho_texto())
+        self.aviso.pack(fill="x", pady=(8, 0))
+        self.boton("Guardar", self._guardar, principal=True)
+        self.boton("Cancelar", self.destroy)
+        self.colocar()
+
+    def _campo(self, etiqueta: str, variable: tk.StringVar) -> None:
+        tk.Label(self.cuerpo, text=etiqueta, bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(10, "bold"),
+                 anchor="w").pack(fill="x", pady=(8, 2))
+        campo = tk.Entry(self.cuerpo, textvariable=variable, font=letra(10))
+        estilo_campo(campo)
+        campo.pack(fill="x", ipady=4)
+
+    def _elegir_tipo(self, tipo: str, repintar: bool = True) -> None:
+        if repintar and self.original is None and tipo != self.tipo.get():
+            # Se rehace la ventana con la opción elegida resaltada; lo ya escrito se conserva.
+            borrador = {"tipo": tipo, "nombre": self.nombre.get(), "icono": self.icono.get(),
+                        "grupo": self.grupo.get(), "destino": self.destino.get(), "ayuda": self.ayuda.get()}
+            editor = self.editor
+            self.destroy()
+            VentanaBoton(editor, None, borrador)
+            return
+        self.tipo.set(tipo)
+        textos = {"url": "Dirección de la página (https://…)", "carpeta": "Carpeta", "programa": "Archivo o programa"}
+        if getattr(self, "etiqueta_destino", None) is not None:
+            self.etiqueta_destino.configure(text=textos.get(tipo, "Destino"))
+            if tipo == "url":
+                self.boton_elegir.pack_forget()
+            elif not self.boton_elegir.winfo_ismapped():
+                self.boton_elegir.pack(side="left", padx=(6, 0))
+
+    def _elegir_destino(self) -> None:
+        from tkinter import filedialog
+        if self.tipo.get() == "carpeta":
+            ruta = filedialog.askdirectory(parent=self, title="Elige la carpeta")
+        else:
+            ruta = filedialog.askopenfilename(parent=self, title="Elige el archivo o programa")
+        if ruta:
+            self.destino.set(os.path.normpath(ruta))
+
+    def _guardar(self) -> None:
+        nombre = self.nombre.get().strip()
+        if not nombre:
+            self.aviso.configure(text="Falta el nombre del botón.")
+            return
+        datos = {**(self.original or {}), "nombre": nombre, "icono": self.icono.get().strip() or "•",
+                 "grupo": self.grupo.get().strip() or "Mis enlaces", "ayuda": self.ayuda.get().strip()}
+        if self.editable:
+            tipo, destino = self.tipo.get(), self.destino.get().strip()
+            if not destino:
+                self.aviso.configure(text="Falta a dónde lleva el botón.")
+                return
+            if tipo == "url" and not re.match(r"https?://", destino, re.IGNORECASE):
+                self.aviso.configure(text="La dirección de una página empieza con https:// (o http://).")
+                return
+            datos.update({"tipo": tipo, "destino": destino})
+        error = self.editor.guardar_boton(self.original.get("nombre") if self.original else None, datos)
+        if error:
+            self.aviso.configure(text=error)
+            return
+        self.destroy()
+
+
+class EditorBotones(tk.Frame):
+    """Ajustes → Botones: mostrar u ocultar, ★ favoritos, ordenar, editar y agregar, sin tocar el archivo a mano."""
+
+    def __init__(self, padre, barra, ancho_texto: int):
+        super().__init__(padre, bg=COLOR_FONDO)
+        self.barra = barra
+        self.ruta = barra._config_propia()
+        self.botones: list[dict] = []
+        self.formato: dict = {}
+        arriba = tk.Frame(self, bg=COLOR_FONDO)
+        arriba.pack(fill="x")
+        tk.Label(arriba, text="☑ se ve · ★ favorito · ↑↓ ordenar · ✎ editar", bg=COLOR_FONDO, fg=COLOR_TENUE,
+                 font=letra(9), anchor="w").pack(side="left")
+        boton_texto(arriba, "+ Agregar", lambda: VentanaBoton(self, None), principal=True).pack(side="right")
+        self.lista = MarcoDesplazable(self, alto_max=int(330 * barra.escala))
+        self.lista.pack(fill="both", expand=True, pady=(8, 0))
+        self.aviso = tk.Label(self, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w",
+                              justify="left", wraplength=ancho_texto)
+        self.aviso.pack(fill="x", pady=(6, 0))
+        restaurar = tk.Label(self, text="Volver a los botones de fábrica", bg=COLOR_FONDO, fg=COLOR_SUAVE,
+                             font=letra(9, "underline"), cursor="hand2", anchor="w")
+        restaurar.pack(fill="x", pady=(4, 0))
+        restaurar.bind("<Button-1>", lambda _e: self._restaurar())
+        self._pintar()
+
+    # ------------------------------------------------------------ datos
+    def _leer(self) -> bool:
+        try:
+            self.botones, self.formato = leer_botones(self.ruta)
+            return True
+        except (OSError, ValueError) as exc:
+            self.botones = []
+            self.aviso.configure(text=f"El archivo de botones tiene un error: {exc}", fg=COLOR_ERROR)
+            return False
+
+    def _guardar(self, mensaje: str = "") -> None:
+        try:
+            guardar_botones(self.ruta, self.botones, self.formato)
+        except OSError as exc:
+            self.aviso.configure(text=f"No se pudo guardar: {exc}", fg=COLOR_ERROR)
+            return
+        self.barra.herramientas = list(self.botones)
+        self.barra._marca_config = self.barra._marca(CONFIG)
+        self.barra._reconstruir_botones()
+        self._pintar()
+        if mensaje:
+            self.aviso.configure(text=mensaje, fg=COLOR_TENUE)
+
+    def _buscar(self, nombre: str) -> dict | None:
+        return next((b for b in self.botones if b.get("nombre") == nombre), None)
+
+    def _de_fabrica(self) -> set[str]:
+        try:
+            plantilla, _ = leer_botones(os.path.join(CARPETA, "herramientas.json"))
+        except (OSError, ValueError):
+            return set()
+        return {b.get("nombre") for b in plantilla}
+
+    # ------------------------------------------------------------ dibujo
+    def _pintar(self) -> None:
+        for hijo in self.lista.interior.winfo_children():
+            hijo.destroy()
+        if not self._leer():
+            return
+        favoritos = {b.get("nombre") for b in Barra._favoritos([b for b in self.botones if not b.get("oculto")])}
+        de_fabrica = self._de_fabrica()
+        grupo_actual = None
+        for b in self.botones:
+            nombre = b.get("nombre", "(sin nombre)")
+            if b.get("grupo") != grupo_actual:
+                grupo_actual = b.get("grupo")
+                tk.Label(self.lista.interior, text=(grupo_actual or "Otros").upper(), bg=COLOR_FONDO, fg=COLOR_ACENTO,
+                         font=letra(9, "bold"), anchor="w").pack(fill="x", pady=(8, 2))
+            fila = tk.Frame(self.lista.interior, bg=COLOR_BOTON)
+            fila.pack(fill="x", pady=1, padx=(0, 4))
+            oculto = bool(b.get("oculto"))
+            self._control(fila, "☐" if oculto else "☑", lambda n=nombre: self._alternar_visible(n),
+                          COLOR_SUAVE if oculto else COLOR_ACENTO)
+            self._control(fila, "★" if nombre in favoritos else "☆", lambda n=nombre: self._alternar_favorito(n),
+                          COLOR_ACENTO if nombre in favoritos else COLOR_SUAVE)
+            tk.Label(fila, text=b.get("icono", "•"), bg=COLOR_BOTON, fg=COLOR_TEXTO,
+                     font=letra(11, familia="Segoe UI Emoji"), width=2).pack(side="left")
+            tk.Label(fila, text=nombre, bg=COLOR_BOTON, fg=COLOR_TENUE if oculto else COLOR_TEXTO, font=letra(10),
+                     anchor="w").pack(side="left", fill="x", expand=True, padx=(2, 6))
+            if nombre not in de_fabrica:
+                self._control(fila, "🗑", lambda n=nombre: self._borrar(n), COLOR_SUAVE, lado="right")
+            self._control(fila, "✎", lambda n=nombre: VentanaBoton(self, dict(self._buscar(n) or {})),
+                          COLOR_TEXTO, lado="right")
+            self._control(fila, "↓", lambda n=nombre: self._mover(n, 1), COLOR_TEXTO, lado="right")
+            self._control(fila, "↑", lambda n=nombre: self._mover(n, -1), COLOR_TEXTO, lado="right")
+        self.lista.activar_rueda()
+
+    @staticmethod
+    def _control(fila, texto: str, accion, color: str, lado: str = "left") -> tk.Label:
+        e = tk.Label(fila, text=texto, bg=COLOR_BOTON, fg=color, font=letra(11, familia="Segoe UI Symbol"),
+                     cursor="hand2", padx=4, pady=3, takefocus=True, highlightthickness=1,
+                     highlightbackground=COLOR_BOTON, highlightcolor=COLOR_ACENTO)
+        e.pack(side=lado)
+        e.bind("<Button-1>", lambda _e: accion())
+        for tecla in ("<Return>", "<space>"):
+            e.bind(tecla, lambda _e: (accion(), "break")[1])
+        e.bind("<Enter>", lambda _e: e.configure(bg=COLOR_HOVER))
+        e.bind("<Leave>", lambda _e: e.configure(bg=COLOR_BOTON))
+        return e
+
+    # ------------------------------------------------------------ acciones
+    def _alternar_visible(self, nombre: str) -> None:
+        b = self._buscar(nombre)
+        if b is None:
+            return
+        if b.get("oculto"):
+            b.pop("oculto", None)
+            self._guardar(f"«{nombre}» se ve de nuevo en la barra.")
+        else:
+            b["oculto"] = True
+            self._guardar(f"«{nombre}» quedó oculto (no se borra: vuelve a marcarlo para verlo).")
+
+    def _alternar_favorito(self, nombre: str) -> None:
+        quedo = alternar_favorito_en(self.botones, nombre)
+        self._guardar(f"«{nombre}» {'quedó en' if quedo else 'salió de'} favoritos.")
+
+    def _mover(self, nombre: str, paso: int) -> None:
+        """Sube o baja el botón dentro de su grupo."""
+        b = self._buscar(nombre)
+        if b is None:
+            return
+        mismos = [i for i, x in enumerate(self.botones) if x.get("grupo") == b.get("grupo")]
+        posicion = mismos.index(self.botones.index(b))
+        otra = posicion + paso
+        if not 0 <= otra < len(mismos):
+            return
+        i, j = mismos[posicion], mismos[otra]
+        self.botones[i], self.botones[j] = self.botones[j], self.botones[i]
+        self._guardar()
+
+    def _borrar(self, nombre: str) -> None:
+        if not messagebox.askyesno("Barra Profe", f"¿Borrar el botón «{nombre}»?", parent=self.winfo_toplevel()):
+            return
+        self.botones = [b for b in self.botones if b.get("nombre") != nombre]
+        self._guardar(f"Se borró «{nombre}».")
+
+    def guardar_boton(self, anterior: str | None, datos: dict) -> str:
+        """Agrega o cambia un botón (lo usa la ventana de edición). Devuelve '' o el motivo por el que no se pudo."""
+        if not self._leer():
+            return "El archivo de botones tiene un error."
+        nombre = datos["nombre"]
+        if nombre != anterior and self._buscar(nombre) is not None:
+            return f"Ya hay un botón llamado «{nombre}»."
+        if anterior is not None:
+            i = next((k for k, b in enumerate(self.botones) if b.get("nombre") == anterior), None)
+            if i is None:
+                return "Ese botón ya no está en el archivo."
+            self.botones[i] = datos
+        else:
+            ultimo = max((k for k, b in enumerate(self.botones) if b.get("grupo") == datos["grupo"]), default=None)
+            self.botones.insert(len(self.botones) if ultimo is None else ultimo + 1, datos)
+        self._guardar(f"Se guardó «{nombre}».")
+        return ""
+
+    def _restaurar(self) -> None:
+        if not messagebox.askyesno("Barra Profe", "¿Volver a los botones de fábrica?\n\nTus cambios quedan guardados "
+                                                  "en una copia, por si quieres recuperarlos.",
+                                   parent=self.winfo_toplevel()):
+            return
+        try:
+            shutil.copy2(self.ruta, self.ruta + ".antes-de-restaurar")
+            shutil.copy2(os.path.join(CARPETA, "herramientas.json"), self.ruta)
+        except OSError as exc:
+            self.aviso.configure(text=f"No se pudo: {exc}", fg=COLOR_ERROR)
+            return
+        self._leer()
+        self._guardar("Volvieron los botones de fábrica (tu versión anterior quedó en "
+                      "herramientas.json.antes-de-restaurar).")
+
+
+class VentanaAjustes(VentanaBase):
+    """⚙ Ajustes: apariencia, botones, comportamiento, profesor, respaldo, actualizaciones y ayuda."""
+
+    ANCHO = 640
+    PESTANAS = ("Apariencia", "Botones", "Comportamiento", "Windows y sonido", "Profesor", "Respaldo",
+                "Actualizaciones", "Ayuda")
+
+    def __init__(self, barra, pestana: str | None = None):
+        from barra_utiles import leer_version
+        super().__init__(barra, "Ajustes", f"{NOMBRE_COMPLETO or 'Este perfil'} · Barra Profe "
+                                           f"v{leer_version(CARPETA) or '?'}", icono="⚙",
+                         titulo_ventana="Ajustes de la barra")
+        self.barra = barra
+        self.ancho_panel = int((self.ANCHO - 230) * self.escala)
+        funciones = {"Apariencia": self._apariencia, "Botones": self._botones,
+                     "Comportamiento": self._comportamiento, "Windows y sonido": self._windows,
+                     "Profesor": self._profesor, "Respaldo": self._respaldo,
+                     "Actualizaciones": self._actualizaciones, "Ayuda": self._ayuda,
+                     "Administrador": self._administrador}
+        # «Administrador» solo en el PC que puede publicar en el buzón del colegio (GitHub CLI con permiso en el repo).
+        nombres = self.PESTANAS + (("Administrador",) if getattr(barra, "es_admin", False) else ())
+        self.pestanas = Pestanas(self.cuerpo, [(n, funciones[n]) for n in nombres], pestana, vertical=True)
+        self.pestanas.pack(fill="both", expand=True)
+        self.boton("Cerrar", self.destroy)
+        self.colocar()
+
+    def _nota(self, panel, texto: str, color: str | None = None) -> tk.Label:
+        etiqueta = tk.Label(panel, text=texto, bg=COLOR_FONDO, fg=color or COLOR_TENUE, font=letra(9), anchor="w",
+                            justify="left", wraplength=self.ancho_panel)
+        etiqueta.pack(fill="x", pady=(0, 6))
+        return etiqueta
+
+    def _titulo(self, panel, texto: str) -> None:
+        tk.Label(panel, text=texto, bg=COLOR_FONDO, fg=COLOR_ACENTO, font=letra(9, "bold"),
+                 anchor="w").pack(fill="x", pady=(12, 2))
+
+    # ------------------------------------------------------------ apariencia
+    def _apariencia(self, panel) -> None:
+        self._nota(panel, f"Queda guardada para {NOMBRE or 'este perfil'} y se aplica al tiro.")
+        llenar_colores(panel, self._elegir_color)
+        actual = apariencia_guardada()
+        opciones_segmentadas(panel, "Tamaño de la letra", [("chica", "Chica"), ("normal", "Normal"),
+                                                            ("grande", "Grande")], actual["letra"],
+                             lambda v: guardar_apariencia(self.barra, "Apariencia", letra=v))
+        opciones_segmentadas(panel, "Ancho de la barra", [("estrecha", "Estrecha"), ("normal", "Normal"),
+                                                           ("ancha", "Ancha")], actual["ancho"],
+                             lambda v: guardar_apariencia(self.barra, "Apariencia", ancho=v))
+
+    def _elegir_color(self, clave: str) -> None:
+        if clave != PALETA:
+            guardar_color(clave, self.barra, "Apariencia")
+
+    # ------------------------------------------------------------ botones
+    def _botones(self, panel) -> None:
+        EditorBotones(panel, self.barra, self.ancho_panel).pack(fill="both", expand=True)
+
+    # ------------------------------------------------------------ comportamiento
+    def _pref(self, **cambios) -> None:
+        self.barra.preferencias = guardar_preferencias(**cambios)
+
+    def _comportamiento(self, panel) -> None:
+        prefs = self.barra.preferencias
+        self.var_pasar = tk.BooleanVar(value=bool(prefs.get("abrir_al_pasar")))
+        casilla(panel, "Abrirla al pasar el mouse por la lengüeta (si no, con un clic)", self.var_pasar,
+                lambda: self._pref(abrir_al_pasar=self.var_pasar.get()), self.ancho_panel)
+        opciones = [(0.5, "0,5 s"), (1.0, "1 s"), (2.0, "2 s"), (4.0, "4 s")]
+        try:
+            guardada = float(prefs.get("demora_plegado", 0.8))
+        except (TypeError, ValueError):
+            guardada = 0.8
+        actual = min(opciones, key=lambda o: abs(o[0] - guardada))[0]
+        opciones_segmentadas(panel, "Esconderse cuando el mouse se va, después de", opciones, actual,
+                             lambda v: (self._pref(demora_plegado=v), self.pestanas.elegir("Comportamiento")))
+        self.var_fija = tk.BooleanVar(value=self.barra.fijada)
+        casilla(panel, "Dejarla fija abierta (igual que el 📌)", self.var_fija, self._fijar, self.ancho_panel)
+
+        self._titulo(panel, "AL TERMINAR UNA TAREA")
+        opciones_segmentadas(panel, "El aviso se ve durante", [(4, "4 s"), (6, "6 s"), (10, "10 s")],
+                             int(prefs.get("aviso_segundos", 6)),
+                             lambda v: (self._pref(aviso_segundos=v), self.pestanas.elegir("Comportamiento")))
+        self.var_sonido_fin = tk.BooleanVar(value=bool(prefs.get("sonido_al_terminar")))
+        casilla(panel, "Con un sonido corto", self.var_sonido_fin,
+                lambda: self._pref(sonido_al_terminar=self.var_sonido_fin.get()), self.ancho_panel)
+        if os.path.isfile(LANZADOR_PLANIFICADOR):
+            self._titulo(panel, "PLANIFICADOR")
+            self.var_plan_listo = tk.BooleanVar(value=bool(prefs.get("planificador_listo")))
+            casilla(panel, "Dejarlo listo al abrir la barra: «Planificar» abre al tiro (usa un poco de memoria)",
+                    self.var_plan_listo, self._alternar_planificador_listo, self.ancho_panel)
+
+    def _alternar_planificador_listo(self) -> None:
+        listo = self.var_plan_listo.get()
+        self._pref(planificador_listo=listo)
+        if listo:
+            preparar_planificador()       # también ahora, sin esperar a la próxima vez que se abra la barra
+
+    def _windows(self, panel) -> None:
+        self._titulo(panel, "SONIDO AL ABRIR LA BARRA")
+        sonido = next((a for a in SONIDO if os.path.isfile(a)), "")
+        self._nota(panel, f"Suena «{os.path.basename(sonido)}»." if sonido else "Sin sonido.", COLOR_TEXTO)
+        fila = tk.Frame(panel, bg=COLOR_FONDO)
+        fila.pack(anchor="w")
+        boton_texto(fila, "Elegir…", self._elegir_sonido).pack(side="left")
+        if sonido:
+            boton_texto(fila, "Probar", sonar_al_abrir).pack(side="left", padx=(6, 0))
+            boton_texto(fila, "Quitar", self._quitar_sonido).pack(side="left", padx=(6, 0))
+
+        self._titulo(panel, "CON WINDOWS")
+        self.caja_windows = tk.Frame(panel, bg=COLOR_FONDO)
+        self.caja_windows.pack(fill="x")
+        self._nota(self.caja_windows, "Revisando los accesos directos…")
+        self._leer_accesos()
+
+    def _fijar(self) -> None:
+        if self.var_fija.get() != self.barra.fijada:
+            self.barra.alternar_fijada()
+
+    def _elegir_sonido(self) -> None:
+        from tkinter import filedialog
+        ruta = filedialog.askopenfilename(parent=self, title="Elige el sonido de inicio",
+                                          filetypes=[("Sonido", "*.mp3 *.wav")])
+        if not ruta:
+            return
+        ext = os.path.splitext(ruta)[1].lower()
+        if ext not in (".mp3", ".wav"):
+            return
+        try:
+            for viejo in SONIDO:
+                if os.path.isfile(viejo):
+                    os.remove(viejo)
+            os.makedirs(rutas.PERSONAL, exist_ok=True)
+            shutil.copy2(ruta, os.path.join(rutas.PERSONAL, f"inicio{ext}"))
+        except OSError as exc:
+            messagebox.showerror("Barra Profe", f"No se pudo guardar el sonido.\n\n{exc}", parent=self)
+            return
+        self.pestanas.elegir("Windows y sonido")
+
+    def _quitar_sonido(self) -> None:
+        for viejo in SONIDO:
+            try:
+                if os.path.isfile(viejo):
+                    os.remove(viejo)
+            except OSError:
+                pass
+        self.pestanas.elegir("Windows y sonido")
+
+    def _leer_accesos(self) -> None:
+        from barra_utiles import accesos_de_la_barra, leer_accesos
+        self.en_segundo_plano(lambda: accesos_de_la_barra(leer_accesos()),
+                              lambda accesos, error: self._pintar_accesos(accesos or [], str(error) if error else ""))
+
+    def _pintar_accesos(self, accesos: list[dict], error: str) -> None:
+        from barra_utiles import letra_del_atajo
+        caja = getattr(self, "caja_windows", None)
+        try:
+            if caja is None or not caja.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        for hijo in caja.winfo_children():
+            hijo.destroy()
+        if error:
+            self._nota(caja, f"No pude revisar los accesos directos: {error}", COLOR_ERROR)
+            return
+        script = os.path.normcase(os.path.join(CARPETA, "barra_profe.pyw"))
+        propios = [a for a in accesos if os.path.normcase(a["script"]) == script]
+        rotos = [a for a in accesos if a["roto"]]
+        self.var_inicio = tk.BooleanVar(value=any(a["carpeta"] == "inicio" for a in propios))
+        casilla(caja, "Abrir la barra al encender el PC", self.var_inicio, self._alternar_inicio, self.ancho_panel)
+        letra_actual = next((letra_del_atajo(a.get("atajo")) for a in propios if letra_del_atajo(a.get("atajo"))), "")
+        tk.Label(caja, text="Atajo de teclado para abrirla (Ctrl + Alt + una letra):", bg=COLOR_FONDO,
+                 fg=COLOR_TEXTO, font=letra(10), anchor="w").pack(fill="x", pady=(8, 2))
+        fila = tk.Frame(caja, bg=COLOR_FONDO)
+        fila.pack(anchor="w")
+        self.letra_atajo = ttk.Combobox(fila, values=["(sin atajo)", *"ABCDEFGHIJKLMNOPQRSTUVWXYZ"],
+                                        state="readonly", width=11, font=letra(10), style="Barra.TCombobox")
+        self.letra_atajo.set(letra_actual or "(sin atajo)")
+        self.letra_atajo.pack(side="left", padx=(0, 6))
+        boton_texto(fila, "Guardar atajo", self._guardar_atajo).pack(side="left")
+        if rotos:
+            self._nota(caja, f"Hay {len(rotos)} acceso(s) directo(s) de la barra que apuntan a una carpeta que ya no "
+                             f"existe ({', '.join(os.path.basename(a['ruta']) for a in rotos)}): por eso no abren nada.",
+                       COLOR_AVISO)
+            boton_texto(caja, "Repararlos", lambda: self._reparar(rotos), principal=True).pack(anchor="w")
+        self.estado_windows = self._nota(caja, "")
+        mensaje = getattr(self, "_mensaje_windows", None)
+        if mensaje:
+            self.estado_windows.configure(text=mensaje[0], fg=mensaje[1])
+            self._mensaje_windows = None
+        self.colocar(self.winfo_y())
+
+    def _cambiar_accesos(self, trabajo, listo: str) -> None:
+        """Cambia accesos directos (PowerShell) sin congelar la ventana; después los vuelve a revisar y avisa."""
+        self.estado_windows.configure(text="Un momento…", fg=COLOR_TENUE)
+
+        def terminado(_resultado, error) -> None:
+            if error:
+                registrar("no se pudo cambiar un acceso directo", str(error))
+            self._mensaje_windows = (f"No se pudo: {error}", COLOR_ERROR) if error else (listo, COLOR_OK)
+            self._leer_accesos()
+        self.en_segundo_plano(trabajo, terminado)
+
+    def _alternar_inicio(self) -> None:
+        from barra_utiles import carpeta_especial, escribir_acceso
+        activar = self.var_inicio.get()
+
+        def trabajo() -> None:
+            ruta = os.path.join(carpeta_especial("Startup"), "Barra Profe.lnk")
+            if activar:
+                escribir_acceso(ruta, *orden_de_la_barra())
+            elif os.path.isfile(ruta):
+                os.remove(ruta)
+        self._cambiar_accesos(trabajo, "Listo: se abrirá al encender el PC." if activar
+                               else "Listo: ya no se abrirá sola al encender.")
+
+    def _guardar_atajo(self) -> None:
+        from barra_utiles import atajo_de_letra, carpeta_especial, escribir_acceso
+        letra_elegida = self.letra_atajo.get()
+        atajo = atajo_de_letra(letra_elegida if len(letra_elegida) == 1 else "")
+
+        def trabajo() -> None:
+            # El atajo va en el acceso del menú Inicio: Windows solo atiende atajos del escritorio y del menú Inicio.
+            ruta = os.path.join(carpeta_especial("Programs"), "Barra Profe.lnk")
+            escribir_acceso(ruta, *orden_de_la_barra(), atajo=atajo)
+        self._cambiar_accesos(trabajo, f"Listo: Ctrl + Alt + {letra_elegida} abre la barra." if atajo
+                               else "Listo: sin atajo.")
+
+    def _reparar(self, rotos: list[dict]) -> None:
+        from barra_utiles import atajo_de_letra, escribir_acceso, letra_del_atajo
+
+        def trabajo() -> None:
+            for acceso in rotos:
+                escribir_acceso(acceso["ruta"], *orden_de_la_barra(),
+                                atajo=atajo_de_letra(letra_del_atajo(acceso.get("atajo"))))
+        self._cambiar_accesos(trabajo, f"Listo: {len(rotos)} acceso(s) directo(s) ahora abren esta barra.")
+
+    # ------------------------------------------------------------ profesor
+    def _profesor(self, panel) -> None:
+        self._nota(panel, "Quién usa la barra en este equipo. Al cambiar se cambian los cursos, el libro, la lista y "
+                          "los colores, sin cerrar la barra."
+                   + (" Cada profesor entra con su PIN de 4 números." if equipo_compartido() else ""))
+        llenar_docentes(panel, lambda c: entrar_como_docente(c, self.barra))
+        fila_accion(panel, "➕  Agregar un profesor…", self._agregar_profesor)
+        if PERFIL:
+            fila_accion(panel, "🔄  Actualizar mis cursos y unidades (desde Webclass)", self._actualizar_cursos)
+            fila_accion(panel, "📆  Días sin clases (feriados, vacaciones)…", self._sin_clases)
+        fila_accion(panel, "🏫  Clave del colegio (avisos y claves de IA)…", lambda: VentanaClaveColegio(self.barra))
+        if PERFIL and equipo_compartido():
+            con_pin = tiene_pin(ruta_pin(rutas.PERSONAL, PERFIL))
+            fila_accion(panel, "🔑  Cambiar mi PIN…" if con_pin else "🔑  Crear mi PIN…", self._cambiar_pin)
+            fila_accion(panel, "🔒  Bloquear la barra (el siguiente profesor entra con su PIN)", self._bloquear)
+
+    def _cambiar_pin(self) -> None:
+        barra = self.barra
+
+        def listo(_clave: str) -> None:
+            messagebox.showinfo("Barra Profe", "Listo: tu PIN quedó guardado.", parent=barra)
+        self.destroy()
+        VentanaPin(barra, PERFIL, listo, modo="cambiar")
+
+    def _bloquear(self) -> None:
+        barra = self.barra
+        self.destroy()
+        barra.bloquear()
+
+    def _sin_clases(self) -> None:
+        barra = self.barra
+        self.destroy()
+        barra.abrir_sin_clases()
+
+    # ------------------------------------------------------------ administrador
+    def _administrador(self, panel) -> None:
+        self._nota(panel, "Lo que publiques llega en unos minutos a la barra de los profes, por GitHub. Lo que va para "
+                          "todos viaja sin cifrar (lo puede leer cualquiera en internet: nada privado). Los mensajes a "
+                          "profes en particular y las claves de IA van cifrados con la clave del colegio.")
+        codigo = colegio.codigo_guardado(vigencia=0)
+        self._titulo(panel, "CLAVE DEL COLEGIO")
+        if codigo:
+            self._nota(panel, f"{colegio.formatear_codigo(codigo)}  ·  pégala una vez en cada PC (⚙ Ajustes → Profesor → "
+                              "«Clave del colegio»). Compártela solo con los profes, nunca en un lugar público.")
+            fila_accion(panel, "📋  Copiar la clave del colegio", lambda: self._copiar_codigo(codigo))
+            self._titulo(panel, "PUBLICAR")
+            fila_accion(panel, "📣  Mensajes y avisos del día…", lambda: VentanaAdministrador(self.barra, "Mensajes"))
+            fila_accion(panel, "🤖  Claves de IA del colegio…", lambda: VentanaAdministrador(self.barra, "Claves de IA"))
+        else:
+            self._nota(panel, "Todavía no hay clave del colegio en este PC. Créala una sola vez: con ella se cifra todo lo "
+                              "que publicas. Si ya la creaste en otro PC, no hagas otra: pégala en Profesor → «Clave del "
+                              "colegio».")
+            fila_accion(panel, "🔑  Crear la clave del colegio", self._crear_codigo)
+
+    def _copiar_codigo(self, codigo: str) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(colegio.formatear_codigo(codigo))
+        messagebox.showinfo("Barra Profe", "La clave del colegio quedó copiada: pégala donde la vayas a enviar.",
+                            parent=self)
+
+    def _crear_codigo(self) -> None:
+        if colegio.leer_paquete(BUZON_COLEGIO) is not None and not messagebox.askyesno(
+                "Barra Profe", "Ya hay avisos publicados con una clave del colegio. Si creas otra, los profes deberán "
+                               "pegar la nueva para seguir recibiendo avisos y claves.\n\n¿Crear una nueva?",
+                icon="warning", default="no", parent=self):
+            return
+        try:
+            codigo = colegio.guardar_codigo(colegio.generar_codigo())
+        except Exception as exc:  # noqa: BLE001  (sin llavero de Windows)
+            messagebox.showerror("Barra Profe", f"No pude guardar la clave del colegio:\n\n{exc}", parent=self)
+            return
+        registrar("se creó la clave del colegio")
+        self._copiar_codigo(codigo)
+        self.pestanas.elegir("Administrador")
+
+    def _agregar_profesor(self) -> None:
+        barra = self.barra
+        self.destroy()
+        VentanaCuenta(barra)
+
+    def _actualizar_cursos(self) -> None:
+        barra, clave = self.barra, PERFIL
+        self.destroy()
+
+        def al_terminar(resultado: dict) -> None:
+            if resultado.get("estado") in ("completado", "avisos") and PERFIL == clave:
+                barra.cambiar_docente(clave)          # relee el perfil recién actualizado
+        Consola(barra, "Actualizar mis cursos", comando_webclass("configurar", "--solo-actualizar", "--nombre",
+                                                                 NOMBRE_COMPLETO or clave),
+                WEBCLASS, "🔄", al_terminar=al_terminar)
+
+    # ------------------------------------------------------------ respaldo
+    def _respaldo(self, panel) -> None:
+        self._nota(panel, "Guarda en un archivo .zip tus botones, colores, preferencias, tu lista, la posición de la "
+                          "barra y tu perfil del planificador. No lleva contraseñas ni claves de IA: en otro PC, primero "
+                          "configura tu cuenta y después importa el respaldo.")
+        fila_accion(panel, "📦  Exportar mi configuración…", self._exportar)
+        fila_accion(panel, "📥  Importar una configuración…", self._importar)
+        self.estado_respaldo = self._nota(panel, "")
+
+    def _exportar(self) -> None:
+        from tkinter import filedialog
+        from barra_utiles import exportar_configuracion, leer_version
+        nombre = f"Barra Profe - {NOMBRE or PERFIL or 'configuración'} - {datetime.date.today():%Y-%m-%d}.zip"
+        destino = filedialog.asksaveasfilename(parent=self, title="Guardar el respaldo", initialfile=nombre,
+                                               defaultextension=".zip", filetypes=[("Respaldo", "*.zip")])
+        if not destino:
+            return
+        try:
+            incluidos = exportar_configuracion(destino, archivos_de_respaldo(),
+                                               {"tipo": "respaldo de Barra Profe", "perfil": PERFIL,
+                                                "version": leer_version(CARPETA),
+                                                "fecha": datetime.datetime.now().isoformat(timespec="seconds")})
+        except OSError as exc:
+            self.estado_respaldo.configure(text=f"No se pudo guardar: {exc}", fg=COLOR_ERROR)
+            return
+        self.estado_respaldo.configure(text=f"✓ Respaldo guardado ({len(incluidos)} archivos): {destino}",
+                                       fg=COLOR_OK)
+
+    def _importar(self) -> None:
+        from tkinter import filedialog
+        from barra_utiles import importar_configuracion
+        origen = filedialog.askopenfilename(parent=self, title="Elige el respaldo", filetypes=[("Respaldo", "*.zip")])
+        if not origen or not messagebox.askyesno(
+                "Barra Profe", "¿Importar esa configuración?\n\nReemplaza tus botones, colores, preferencias y lista "
+                               "actuales (se guarda una copia por si quieres volver atrás).", parent=self):
+            return
+        copia = rutas.dato(f"respaldo_antes_de_importar_{datetime.datetime.now():%Y%m%d_%H%M%S}.zip")
+        try:
+            importados = importar_configuracion(origen, archivos_de_respaldo(), copia)
+        except (OSError, ValueError) as exc:
+            self.estado_respaldo.configure(text=str(exc), fg=COLOR_ERROR)
+            return
+        registrar(f"configuración importada ({len(importados)} archivos); copia anterior en {copia}")
+        barra = self.barra
+        try:
+            with open(CONFIG, encoding="utf-8-sig") as f:
+                barra.herramientas = json.load(f)
+        except (OSError, ValueError):
+            pass
+        aplicar_apariencia(apariencia_guardada())
+        barra.reconstruir("Respaldo")
+
+    # ------------------------------------------------------------ actualizaciones y ayuda
+    def _actualizaciones(self, panel) -> None:
+        from barra_utiles import leer_version
+        tk.Label(panel, text=f"Versión instalada: {leer_version(CARPETA) or 'sin número'}", bg=COLOR_FONDO,
+                 fg=COLOR_TEXTO, font=letra(10, "bold"), anchor="w").pack(fill="x")
+        self._nota(panel, "La barra busca versiones nuevas sola al abrirse y cada 6 horas. Si hay una, aparece un "
+                          "aviso bajo la cabecera.")
+        boton_texto(panel, "Buscar actualizaciones ahora", self._buscar, principal=True).pack(anchor="w", pady=(4, 0))
+
+    def _buscar(self) -> None:
+        barra = self.barra
+        self.destroy()
+        barra._buscar_actualizacion_manual()
+
+    def _ayuda(self, panel) -> None:
+        self._nota(panel, "Si algo no sale, el registro dice qué pasó (puedes copiarlo y enviarlo).")
+        fila_accion(panel, "▶  Ver el recorrido de la barra", self._tour)
+        fila_accion(panel, "📄  Ver el registro de la barra", lambda: self.barra._abrir_archivo(LOG))
+        fila_accion(panel, "📁  Abrir la carpeta de la barra", lambda: self.barra._abrir_archivo(CARPETA))
+
+    def _tour(self) -> None:
+        barra = self.barra
+        self.destroy()
+        barra.iniciar_tour()
+
+
 class Tour(tk.Toplevel):
     """Recorrido de bienvenida: resalta cada parte de la barra y la explica."""
 
@@ -3733,17 +5924,17 @@ class Tour(tk.Toplevel):
         interior = tk.Frame(self, bg=COLOR_BOTON)
         interior.pack(padx=2, pady=2, fill="both", expand=True)
         self.etiqueta_paso = tk.Label(interior, text="", bg=COLOR_BOTON, fg=COLOR_ACENTO,
-                                      font=(familia, 9, "bold"), anchor="w")
+                                      font=letra(9, "bold"), anchor="w")
         self.etiqueta_paso.pack(fill="x", padx=14, pady=(12, 0))
         self.titulo = tk.Label(interior, text="", bg=COLOR_BOTON, fg=COLOR_TEXTO,
-                               font=(familia, 13, "bold"), anchor="w")
+                               font=letra(13, "bold"), anchor="w")
         self.titulo.pack(fill="x", padx=14)
         self.texto = tk.Label(interior, text="", bg=COLOR_BOTON, fg=COLOR_TEXTO,
-                              font=(familia, 10), anchor="w", justify="left",
+                              font=letra(10), anchor="w", justify="left",
                               wraplength=ancho - 30)
         self.texto.pack(fill="x", padx=14, pady=(4, 8))
         self.puntos = tk.Label(interior, text="", bg=COLOR_BOTON, fg=COLOR_ACENTO,
-                               font=(familia, 10), anchor="w")
+                               font=letra(10), anchor="w")
         self.puntos.pack(fill="x", padx=14)
         pie = tk.Frame(interior, bg=COLOR_BOTON)
         pie.pack(fill="x", padx=14, pady=(8, 12))
@@ -3821,10 +6012,10 @@ class Aviso(tk.Toplevel):
         cuerpo = tk.Frame(self, bg=COLOR_BOTON, cursor="hand2")
         cuerpo.pack(padx=(4, 0), fill="both", expand=True)       # franja de color a la izquierda
         tk.Label(cuerpo, text=titulo, bg=COLOR_BOTON, fg=COLOR_TEXTO, anchor="w",
-                 font=(familia, 10, "bold"), wraplength=int(260 * barra.escala),
+                 font=letra(10, "bold"), wraplength=int(260 * barra.escala),
                  justify="left").pack(fill="x", padx=12, pady=(10, 0))
         tk.Label(cuerpo, text=detalle, bg=COLOR_BOTON, fg=COLOR_TENUE, anchor="w",
-                 font=(familia, 9), wraplength=int(260 * barra.escala),
+                 font=letra(9), wraplength=int(260 * barra.escala),
                  justify="left").pack(fill="x", padx=12, pady=(2, 10))
         for widget in (self, cuerpo, *cuerpo.winfo_children()):
             widget.bind("<Button-1>", lambda _e: self._pulsado(al_pulsar))
@@ -3870,8 +6061,9 @@ class Barra(RAIZ_TK):
         self.alto_lengueta = int(ALTO_LENGUETA * self.escala)
         self.margen = int(MARGEN * self.escala)
 
-        self.fuente = tkfont.Font(family="Segoe UI", size=9)
-        self.fuente_icono = tkfont.Font(family="Segoe UI Emoji", size=13)
+        self.fuente = tkfont.Font(family="Segoe UI", size=tema.tamano_letra(9, ESCALA_LETRA))
+        self.fuente_icono = tkfont.Font(family="Segoe UI Emoji", size=tema.tamano_letra(13, ESCALA_LETRA))
+        self.preferencias = leer_preferencias()
 
         estado = self._leer_estado()
         self.lado = estado.get("lado", "derecha")
@@ -3888,16 +6080,27 @@ class Barra(RAIZ_TK):
         self._candado_revision = threading.Lock()
         self.corriendo: dict[str, Consola] = {}       # actividades en marcha, por botón
         self.ejecuciones = cargar_ejecuciones(EJECUCIONES)
-        self.filas_boton: dict[str, dict] = {}
+        # Filas de cada botón (un favorito aparece dos veces: en Favoritos y en su grupo) y grupos plegables.
+        self.filas_boton: dict[str, list[dict]] = {}
+        self.grupos_ui: dict[str, dict] = {}
         self._fin_barra: dict[str, tuple[str, float]] = {}   # barrita que se apaga sola
         self._alerta_libro = False
         self._destello: str | None = None             # color breve de la lengüeta
         self._animando = False
         self._tour: Tour | None = None
         self.primer_boton: tk.Misc | None = None
-        self.pie_botones: tk.Misc | None = None
         self._marcos_resalte: list[tk.Frame] = []
         self._revisando = False      # antes de construir: _actualizar_saludo lo consulta
+        self._horario_pedido = False  # «Mi horario» ya se pidió a WebClass en esta sesión (sin asistente)
+        self.es_admin = False         # ¿puede publicar avisos y claves del colegio? (se revisa al rato de abrir)
+        # Equipo con varios profesores: parte bloqueada hasta que alguien escriba su PIN (así nadie usa por error la
+        # cuenta del profesor anterior). Si se reabrió sola con alguien recién desbloqueado, no lo vuelve a pedir.
+        self.bloqueada = debe_partir_bloqueada()
+        self.velo: tk.Frame | None = None
+        DESBLOQUEO["activo"] = not self.bloqueada
+        # Lo que muestra la tarjeta «Hoy»: (una línea, detalle completo) y su color.
+        self._texto_libro, self._color_libro = ("", ""), COLOR_TENUE
+        self._texto_jefatura, self._color_jefatura = ("", ""), COLOR_TENUE
 
         self._construir_lengueta()
         self._construir_panel()
@@ -3912,8 +6115,8 @@ class Barra(RAIZ_TK):
         # pasar el mouse mientras esté desplegada, o la rueda no llega.
         self.bind_all("<MouseWheel>", self._rodar)
         self.bind_all("<ButtonPress-1>", self._tomar_foco, add="+")
-        self.bind_all("<Prior>", lambda _e: self._desplazar(-self.alto * 0.8), add="+")
-        self.bind_all("<Next>", lambda _e: self._desplazar(self.alto * 0.8), add="+")
+        self.bind_all("<Prior>", lambda _e: self._desplazar(-self.alto_area * 0.8), add="+")
+        self.bind_all("<Next>", lambda _e: self._desplazar(self.alto_area * 0.8), add="+")
         self._construir_indicador()
         self._colocar()
         self._abrir_puerta()
@@ -3928,8 +6131,15 @@ class Barra(RAIZ_TK):
         self._iniciar_mensajeria()
         self.after(2500, self._vigilar_mensajes)
         self.after(2500, self._tour_inicial)
+        self.after(5000, self._buscar_periodica)    # versión nueva: al rato de abrir y después cada 6 horas
+        self.after(4000, self._vigilar_colegio)     # avisos y claves de IA del colegio: al rato y cada 20 minutos
+        self.after(7000, self._revisar_admin)
+        if self.preferencias.get("planificador_listo"):
+            self.after(8000, preparar_planificador)  # un rato después: que la barra termine de abrir primero
+        if not DOCENTES:                             # primer uso: configurar la cuenta sin consola
+            self.after(1500, lambda: VentanaCuenta(self))
         self._activar_soltar()
-        # Escape solo esconde la barra; para cerrarla de verdad está la ✕.
+        # Escape solo esconde la barra; la ✕ pregunta si esconderla o cerrarla.
         self.bind("<Escape>", lambda _e: self._plegar(forzar=True))
         registrar(f"barra abierta ({len(herramientas)} botones, escala {self.escala:.2f})")
 
@@ -3938,8 +6148,8 @@ class Barra(RAIZ_TK):
         """La lengüeta se abre con un clic: pasar el mouse no la despliega."""
         self.lengueta = tk.Frame(self, bg=COLOR_LENGUETA, width=self.ancho_lengueta,
                                  cursor="hand2")
-        marca = tk.Label(self.lengueta, text="⋮", bg=COLOR_LENGUETA, fg="white",
-                         font=(self.fuente.cget("family"), 9), cursor="hand2")
+        marca = tk.Label(self.lengueta, text="⋮", bg=COLOR_LENGUETA, fg=COLOR_SOBRE_LENGUETA,
+                         font=letra(9), cursor="hand2")
         marca.pack(expand=True)
         for widget in (self.lengueta, marca):
             widget.bind("<Button-1>", lambda _e: self._desplegar())
@@ -3948,89 +6158,279 @@ class Barra(RAIZ_TK):
                                                            self._color_lengueta()))
 
     def _construir_panel(self) -> None:
-        self.panel = tk.Frame(self, bg=COLOR_FONDO)
+        """Cabecera fija arriba y, debajo, el área que se desplaza cuando el contenido no cabe en la pantalla."""
+        self.contenedor = tk.Frame(self, bg=COLOR_FONDO)
+        self.contenedor.pack(fill="both", expand=True)
+        self._construir_cabecera()
+        self.area = tk.Frame(self.contenedor, bg=COLOR_FONDO)
+        self.area.pack(fill="both", expand=True)
+        self.panel = tk.Frame(self.area, bg=COLOR_FONDO)
         self.panel.pack(fill="both", expand=True)
 
-        self.cabecera = tk.Frame(self.panel, bg=COLOR_FONDO, cursor="fleur")
+        envoltura = self.ancho - int(24 * self.escala)
+        self._construir_hoy(envoltura)
+        self._construir_avisos(envoltura)
+        # Mensajes del equipo (la mensajería sigue en el programa): la línea aparece solo si está activa.
+        self.mensajes_texto = tk.Label(self.panel, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
+                                       font=letra(9), anchor="w", cursor="hand2")
+        self.mensajes_texto.bind("<Button-1>", lambda _e: self.abrir_mensajes())
+        self._construir_lista(envoltura)
+
+        self.cuerpo = tk.Frame(self.panel, bg=COLOR_FONDO)
+        self.cuerpo.pack(fill="both", expand=True)
+        self._construir_botones()
+        self.velo = None
+        if self.bloqueada:
+            self._mostrar_bloqueo()
+
+    def _construir_cabecera(self) -> None:
+        """Lo que siempre se ve aunque el resto se desplace: para moverla, ajustes, fijarla y cerrarla."""
+        self.cabecera = tk.Frame(self.contenedor, bg=COLOR_FONDO, cursor="fleur")
         self.cabecera.pack(fill="x")
-        tk.Label(self.cabecera, text="≡", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                 font=self.fuente, cursor="fleur").pack(side="left", padx=(8, 4), pady=2)
-        self.boton_cerrar = self._boton_cabecera("✕", self.destroy)
-        self.boton_fijar = self._boton_cabecera("📌", self.alternar_fijada)
+        tk.Label(self.cabecera, text="≡", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(10),
+                 cursor="fleur").pack(side="left", padx=(8, 4), pady=4)
+        self.boton_cerrar = self._boton_cabecera("✕", self.pedir_cerrar, "Esconder o cerrar la barra")
+        self.boton_fijar = self._boton_cabecera("📌", self.alternar_fijada,
+                                                "Dejarla fija abierta (no se esconde sola)")
+        self.boton_ajustes = self._boton_cabecera("⚙", self.abrir_ajustes,
+                                                  "Ajustes: color, profesor, actualizaciones y ayuda")
         self._pintar_fijada()
+        self.saludo = tk.Label(self.cabecera, text=NOMBRE or "Barra Profe", bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                               font=letra(11, "bold"), anchor="w", cursor="fleur")
+        self.saludo.pack(side="left", fill="x", expand=True)
         # Los botones de la cabecera no arrastran: si se les asignara el
         # arrastre, se pisaría su propio clic (así la ✕ dejó de cerrar).
-        botones = (self.boton_cerrar, self.boton_fijar)
+        botones = (self.boton_cerrar, self.boton_fijar, self.boton_ajustes)
         for evento, accion in (("<Button-1>", self._tomar), ("<B1-Motion>", self._mover),
                                ("<ButtonRelease-1>", self._soltar)):
             self.cabecera.bind(evento, accion)
             for hijo in self.cabecera.winfo_children():
                 if hijo not in botones:
                     hijo.bind(evento, accion)
+        # Aviso de versión nueva: aparece bajo la cabecera, siempre a la vista.
+        self.aviso_actualizacion = tk.Label(self.contenedor, text="", bg=COLOR_BOTON, fg=COLOR_ACENTO,
+                                            font=letra(9, "bold"), cursor="hand2", anchor="w", justify="left",
+                                            wraplength=self.ancho - int(24 * self.escala), padx=10, pady=5)
+        self.separador_cabecera = tk.Frame(self.contenedor, bg=COLOR_BOTON, height=max(1, round(self.escala)))
+        self.separador_cabecera.pack(fill="x")
 
-        envoltura = self.ancho - int(20 * self.escala)
-        self.saludo = tk.Label(self.panel, text=saludo(), bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                               font=(self.fuente.cget("family"), 11, "bold"),
-                               anchor="w", wraplength=envoltura, justify="left")
-        self.saludo.pack(fill="x", padx=10, pady=(6, 0))
-        self.fecha = tk.Label(self.panel, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                              font=(self.fuente.cget("family"), 9), anchor="w")
-        self.fecha.pack(fill="x", padx=10, pady=(0, 4))
-
-        self._construir_agenda(envoltura)
-        self.libro_texto = tk.Label(self.panel, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                                    font=(self.fuente.cget("family"), 9), anchor="w",
-                                    wraplength=envoltura, justify="left", cursor="hand2")
-        self.libro_texto.pack(fill="x", padx=10, pady=(0, 4))
-        self.libro_texto.bind("<Button-1>", lambda _e: webbrowser.open(CALENDARIO))
-        self.jefatura_texto = tk.Label(self.panel, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                                       font=(self.fuente.cget("family"), 9), anchor="w",
-                                       wraplength=envoltura, justify="left")
-        self.jefatura_texto.pack(fill="x", padx=10, pady=(0, 4))
-        self.mensajes_texto = tk.Label(self.panel, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                                       font=(self.fuente.cget("family"), 9), anchor="w",
-                                       cursor="hand2")
-        self.mensajes_texto.pack(fill="x", padx=10, pady=(0, 4))
-        self.mensajes_texto.bind("<Button-1>", lambda _e: self.abrir_mensajes())
-        self._construir_lista(envoltura)
-        self._construir_bandeja(envoltura)
-
-        self.cuerpo = tk.Frame(self.panel, bg=COLOR_FONDO)
-        self.cuerpo.pack(fill="both", expand=True)
-        self._construir_botones()
-
-    def _boton_cabecera(self, texto: str, accion) -> tk.Label:
-        b = tk.Label(self.cabecera, text=texto, bg=COLOR_FONDO, fg=COLOR_TENUE,
-                     font=self.fuente, cursor="hand2", padx=6)
+    def _boton_cabecera(self, texto: str, accion, ayuda: str = "") -> tk.Label:
+        # Con «Segoe UI Emoji»: en «Segoe UI» Windows busca el 📌 entre todas las fuentes y tardaba casi un segundo.
+        b = tk.Label(self.cabecera, text=texto, bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(10, familia="Segoe UI Emoji"),
+                     cursor="hand2", padx=5, takefocus=True, highlightthickness=1,
+                     highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
         b.pack(side="right")
         b.bind("<Button-1>", lambda _e: accion())
+        for tecla in ("<Return>", "<space>"):
+            b.bind(tecla, lambda _e: (accion(), "break")[1])
+        b.bind("<Enter>", lambda _e: (b.configure(fg=COLOR_TEXTO), self._tip(ayuda)))
+        b.bind("<Leave>", lambda _e: (b.configure(fg=self._color_boton_cabecera(b)), self._tip("")))
         return b
 
+    def _color_boton_cabecera(self, boton: tk.Label) -> str:
+        return COLOR_TEXTO if boton is getattr(self, "boton_fijar", None) and self.fijada else COLOR_TENUE
+
     # ----------------------------------------------------------------- agenda
-    def _construir_agenda(self, envoltura: int) -> None:
-        """Dos líneas: qué hay ahora y qué viene después."""
-        marco = tk.Frame(self.panel, bg=COLOR_FONDO)
-        marco.pack(fill="x", padx=10, pady=(0, 4))
-        self.ahora_texto = tk.Label(marco, text="", bg=COLOR_FONDO, fg=COLOR_TEXTO,
-                                    font=(self.fuente.cget("family"), 9, "bold"),
-                                    anchor="w", wraplength=envoltura, justify="left")
-        self.ahora_texto.pack(fill="x")
-        self.luego_texto = tk.Label(marco, text="", bg=COLOR_FONDO, fg=COLOR_ACENTO,
-                                    font=(self.fuente.cget("family"), 9),
-                                    anchor="w", wraplength=envoltura, justify="left")
-        self.luego_texto.pack(fill="x")
+    def _construir_hoy(self, envoltura: int) -> None:
+        """Tarjeta «Hoy». Plegada muestra lo justo (qué hay ahora, el libro y cuántos faltan); un clic en «HOY»
+        muestra el detalle (qué viene después, los bloques atrasados, quiénes faltaron)."""
+        self.hoy_abierta = bool(self.preferencias.get("hoy_abierta", False))
+        self.tarjeta_hoy = tk.Frame(self.panel, bg=COLOR_FONDO)
+        self.tarjeta_hoy.pack(fill="x", padx=10, pady=(6, 4))
+        self.fecha = tk.Label(self.tarjeta_hoy, text="", bg=COLOR_FONDO, fg=COLOR_ACENTO, font=letra(9, "bold"),
+                              anchor="w", justify="left", wraplength=envoltura, cursor="hand2", takefocus=True,
+                              highlightthickness=1, highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
+        self.fecha.bind("<Button-1>", lambda _e: self.alternar_hoy())
+        for tecla in ("<Return>", "<space>"):
+            self.fecha.bind(tecla, lambda _e: (self.alternar_hoy(), "break")[1])
+        self.ahora_texto = tk.Label(self.tarjeta_hoy, text="", bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                                    font=letra(10, "bold"), anchor="w", wraplength=envoltura, justify="left")
+        self.luego_texto = tk.Label(self.tarjeta_hoy, text="", bg=COLOR_FONDO, fg=COLOR_ACENTO,
+                                    font=letra(9), anchor="w", wraplength=envoltura, justify="left")
+        # Un clic en el libro («2 sin firmar…») o en la jefatura («3 ausentes…») despliega o pliega el detalle,
+        # igual que «HOY». El libro en Webclass queda a un clic en el detalle («Abrir el libro en Webclass»).
+        self.libro_texto = tk.Label(self.tarjeta_hoy, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
+                                    font=letra(9), anchor="w", wraplength=envoltura, justify="left", cursor="hand2")
+        self.jefatura_texto = tk.Label(self.tarjeta_hoy, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
+                                       font=letra(9), anchor="w", wraplength=envoltura, justify="left", cursor="hand2")
+        for etiqueta in (self.libro_texto, self.jefatura_texto):
+            etiqueta.bind("<Button-1>", lambda _e: self.alternar_hoy())
+        self.libro_enlace = tk.Label(self.tarjeta_hoy, text="Abrir el libro en Webclass ↗", bg=COLOR_FONDO,
+                                     fg=COLOR_SUAVE, font=letra(9, "underline"), anchor="w", cursor="hand2")
+        self.libro_enlace.bind("<Button-1>", lambda _e: webbrowser.open(CALENDARIO))
+        # Un feriado deja bloques «pendientes» que nunca se van a registrar: desde aquí se marcan.
+        self.sin_clases_enlace = tk.Label(self.tarjeta_hoy, text="¿Feriado o día sin clases? Márcalo ›", bg=COLOR_FONDO,
+                                          fg=COLOR_SUAVE, font=letra(9, "underline"), anchor="w", cursor="hand2")
+        self.sin_clases_enlace.bind("<Button-1>", lambda _e: self.abrir_sin_clases())
+        self._pintar_hoy()
+
+    def _pintar_hoy(self) -> None:
+        """Pone en la tarjeta «Hoy» lo que corresponde según esté plegada o abierta."""
+        if getattr(self, "tarjeta_hoy", None) is None:
+            return
+        abierta = self.hoy_abierta
+        self.fecha.configure(text=f"{'▾' if abierta else '▸'} HOY · {getattr(self, '_texto_fecha', '')}".rstrip(" ·"))
+        self.libro_texto.configure(text=self._texto_libro[1 if abierta else 0], fg=self._color_libro)
+        self.jefatura_texto.configure(text=self._texto_jefatura[1 if abierta else 0], fg=self._color_jefatura)
+        filas = [(self.fecha, (0, 0))]
+        if self.ahora_texto.cget("text"):          # vacío (sin horario) no deja un hueco
+            filas.append((self.ahora_texto, (2, 0)))
+        if abierta and self.luego_texto.cget("text"):
+            filas.append((self.luego_texto, (0, 0)))
+        if self.libro_texto.cget("text"):
+            filas.append((self.libro_texto, (4, 0)))
+            if abierta:
+                filas.append((self.libro_enlace, (0, 0)))
+                if getattr(self, "_hay_pendientes_libro", False):
+                    filas.append((self.sin_clases_enlace, (0, 0)))
+        if self.jefatura_texto.cget("text"):
+            filas.append((self.jefatura_texto, (2, 0)))
+        for hijo in self.tarjeta_hoy.winfo_children():
+            hijo.pack_forget()
+        for etiqueta, espacio in filas:
+            etiqueta.pack(fill="x", pady=espacio)
+
+    def alternar_hoy(self) -> None:
+        self.hoy_abierta = not self.hoy_abierta
+        self.preferencias = guardar_preferencias(hoy_abierta=self.hoy_abierta)
+        self._pintar_hoy()
+        self._recolocar()
 
     def _refrescar_agenda(self) -> None:
         if getattr(self, "ahora_texto", None) is None:
             return
-        ahora, luego = ahora_y_luego(agenda_de_hoy())
+        # Sin ningún horario (ni del asistente ni de «Mi horario») no se dice «Hoy no hay clases»: no se sabe
+        ahora, luego = ahora_y_luego(agenda_de_hoy()) if hay_agenda() else ("", "")
         self.ahora_texto.configure(text=f"Ahora · {ahora}" if ahora else "")
         self.luego_texto.configure(text=f"Luego · {luego}" if luego else "")
+        self._pintar_hoy()
 
     def _vigilar_agenda(self) -> None:
         """La agenda se refresca sola aunque la barra quede fija y abierta."""
         self._refrescar_agenda()
+        self._vigilar_horario()
         self.after(MS_VIGILAR_AGENDA, self._vigilar_agenda)
+
+    def _vigilar_horario(self) -> None:
+        """Sin asistente, «Ahora / Luego» sale de «Mi horario» de WebClass: si nunca se leyó o tiene más de 7 días, se
+        vuelve a leer solo, en segundo plano y una vez por sesión (solo lectura, como «Mi horario»)."""
+        if self._horario_pedido or os.path.isfile(HORARIO) or not PERFIL:
+            return
+        if not horario_vencido(leer_json(HORARIO_SEMANA), datetime.date.today()):
+            return
+        self._horario_pedido = True
+        try:
+            proceso = subprocess.Popen(comando_webclass("horario", "--salida", HORARIO_SEMANA), cwd=WEBCLASS,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except Exception as exc:  # noqa: BLE001
+            registrar("no se pudo leer el horario de WebClass", str(exc))
+            return
+        registrar("leyendo «Mi horario» de WebClass para «Ahora / Luego»")
+
+        def revisar() -> None:
+            if proceso.poll() is None:
+                self.after(2000, revisar)
+            else:
+                self._refrescar_agenda()
+        self.after(2000, revisar)
+
+    # ------------------------------------------------------ avisos del colegio
+    def _construir_avisos(self, envoltura: int) -> None:
+        """Tarjeta «📣 Avisos», arriba de «Hoy»: los mensajes del administrador para este profe y los avisos de hoy.
+        Sin nada que mostrar, no ocupa lugar."""
+        self.tarjeta_avisos = tk.Frame(self.panel, bg=COLOR_FONDO)
+        self._envoltura_avisos = envoltura
+        self._pintar_avisos()
+
+    def avisos_de_hoy(self) -> list[dict]:
+        if not PERFIL:
+            return []
+        return colegio.para_mostrar(colegio.contenido_guardado(BUZON_COLEGIO), rut_del_docente(), NOMBRE_COMPLETO,
+                                    datetime.date.today(), colegio.leer_leidos(AVISOS_LEIDOS))
+
+    def _pintar_avisos(self) -> None:
+        marco = getattr(self, "tarjeta_avisos", None)
+        if marco is None:
+            return
+        for hijo in marco.winfo_children():
+            hijo.destroy()
+        avisos = self.avisos_de_hoy()
+        if not avisos:
+            marco.configure(height=1)
+            if marco.winfo_manager():
+                marco.pack_forget()
+            return
+        tk.Label(marco, text=f"📣 AVISOS · {len(avisos)}", bg=COLOR_FONDO, fg=COLOR_ACENTO, font=letra(9, "bold"),
+                 anchor="w").pack(fill="x")
+        for m in avisos[:3]:
+            fila = tk.Frame(marco, bg=COLOR_BOTON)
+            fila.pack(fill="x", pady=(4, 0))
+            quien = ("Aviso de hoy" if m["tipo"] == "aviso" else "Mensaje") + (f" de {m['de']}" if m.get("de") else "")
+            tk.Label(fila, text=quien, bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9), anchor="w").pack(
+                fill="x", padx=8, pady=(5, 0))
+            tk.Label(fila, text=m["texto"], bg=COLOR_BOTON, fg=COLOR_TEXTO, font=letra(10), anchor="w", justify="left",
+                     wraplength=self._envoltura_avisos - int(20 * self.escala)).pack(fill="x", padx=8)
+            listo = tk.Label(fila, text="Listo ✓", bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9, "underline"),
+                             cursor="hand2", takefocus=True)
+            listo.pack(anchor="e", padx=8, pady=(0, 5))
+            listo.bind("<Button-1>", lambda _e, i=m["id"]: self.marcar_aviso_leido(i))
+            for tecla in ("<Return>", "<space>"):
+                listo.bind(tecla, lambda _e, i=m["id"]: (self.marcar_aviso_leido(i), "break")[1])
+        if len(avisos) > 3:
+            tk.Label(marco, text=f"y {len(avisos) - 3} más: aparecen al marcar «Listo»", bg=COLOR_FONDO, fg=COLOR_TENUE,
+                     font=letra(9), anchor="w").pack(fill="x", pady=(2, 0))
+        if not marco.winfo_manager():
+            marco.pack(fill="x", padx=10, pady=(6, 2), before=self.tarjeta_hoy)
+
+    def marcar_aviso_leido(self, ident: str) -> None:
+        try:
+            colegio.marcar_leido(AVISOS_LEIDOS, ident)
+        except OSError as exc:
+            registrar("no se pudo marcar el aviso como leído", str(exc))
+        self._pintar_avisos()
+        self._recolocar()
+
+    def _vigilar_colegio(self) -> None:
+        """Cada 20 minutos trae de GitHub el buzón del colegio (en segundo plano), pinta los avisos y avisa lo nuevo.
+        Sin internet o sin buzón publicado todavía, no pasa nada: se sigue con lo que ya había."""
+        def listo(_cambio, error) -> None:
+            if error is not None and not isinstance(error, OSError):
+                registrar("el buzón del colegio no se pudo leer", str(error)[:200])
+            self.refrescar_avisos()
+        en_segundo_plano(self, lambda: colegio.descargar(BUZON_COLEGIO), listo)
+        self.after(MS_VIGILAR_COLEGIO, self._vigilar_colegio)
+
+    def refrescar_avisos(self) -> None:
+        try:
+            self._pintar_avisos()
+            self._recolocar()
+            self._avisar_nuevos()
+        except tk.TclError:
+            pass
+
+    def _avisar_nuevos(self) -> None:
+        """Un cartelito con lo que este profe todavía no había visto (una sola vez por mensaje o aviso)."""
+        if self.bloqueada:
+            return                          # con el PIN puesto puede estar otro profe frente al PC: se avisa al entrar
+        avisados = [str(x) for x in self.preferencias.get("avisos_avisados") or []]
+        nuevos = [m for m in self.avisos_de_hoy() if m["id"] not in avisados]
+        if not nuevos:
+            return
+        if len(nuevos) == 1:
+            m = nuevos[0]
+            titulo = ("Aviso de hoy" if m["tipo"] == "aviso" else "Mensaje") + (f" de {m['de']}" if m.get("de") else "")
+        else:
+            titulo = f"{len(nuevos)} avisos nuevos del colegio"
+        Aviso(self, "proceso", titulo, nuevos[0]["texto"][:140], al_pulsar=self._desplegar, segundos=12)
+        self.preferencias = guardar_preferencias(avisos_avisados=(avisados + [m["id"] for m in nuevos])[-200:])
+
+    def _revisar_admin(self) -> None:
+        """¿Puede este PC publicar en el buzón del colegio? (GitHub CLI con permiso en el repositorio). Solo entonces
+        Ajustes muestra la pestaña «Administrador»."""
+        if not shutil.which("gh"):
+            return
+        en_segundo_plano(self, colegio.es_administrador,
+                         lambda es, _error: setattr(self, "es_admin", bool(es)))
 
     # ------------------------------------------------------- firmas pendientes
     def _vigilar_firmas(self) -> None:
@@ -4093,13 +6493,16 @@ class Barra(RAIZ_TK):
         threading.Thread(target=esperar, daemon=True).start()
 
     def _refrescar_firmas(self) -> None:
-        """Lee estado_firmas.json y actualiza la lengüeta y la línea del panel."""
+        """Lee estado_firmas.json y actualiza la lengüeta y la línea del libro en la tarjeta «Hoy»."""
         hoy = datetime.date.today().strftime("%d/%m/%Y")
         texto, color, alerta = "", COLOR_TENUE, False
         estado: dict = {}
+        self._hay_pendientes_libro = False
         try:
             with open(ESTADO_FIRMAS, encoding="utf-8") as f:
                 estado = json.load(f)
+            # Lo marcado como «no hubo clases» deja de contar al tiro, sin esperar la próxima revisión.
+            estado = aplicar_sin_clases(estado, leer_sin_clases(SIN_CLASES))
             if estado.get("fecha") != hoy:
                 texto = "Libro: sin revisar hoy"
             elif estado.get("error"):
@@ -4107,10 +6510,13 @@ class Barra(RAIZ_TK):
             else:
                 faltan = estado.get("sin_firmar", [])
                 sin_reg = estado.get("sin_registro", [])
-                if faltan:
+                self._hay_pendientes_libro = bool(faltan or sin_reg or estado.get("atrasados"))
+                if estado.get("sin_clases"):
+                    texto = "Hoy: sin clases (lo marcaste)"
+                elif faltan:
                     cuales = ", ".join(f"{b['curso']} {b['hora'].split('-')[0]}" for b in faltan[:3])
                     texto = f"⚠ {len(faltan)} sin firmar · {cuales}"
-                    color, alerta = COLOR_ALERTA, True
+                    color, alerta = COLOR_ERROR, True
                 elif sin_reg:
                     texto = f"⚠ {len(sin_reg)} sin registrar (OA o asistencia)"
                     color = COLOR_ACENTO
@@ -4125,44 +6531,48 @@ class Barra(RAIZ_TK):
                         color = COLOR_ACENTO
         except (OSError, ValueError):
             texto = "Libro: aún sin datos (se revisa solo)"
-        if getattr(self, "libro_texto", None):
-            self.libro_texto.configure(text=texto, fg=color)
+        resumen = texto.split("\n")[0]
+        if "\n" in texto and not resumen.startswith("⚠"):
+            resumen += " · ↩ hay días atrasados"
+        self._texto_libro, self._color_libro = (resumen, texto), color
+        self._pintar_hoy()
         self._pintar_lengueta(alerta)
         self._refrescar_jefatura(estado)
 
     def _refrescar_jefatura(self, completo: dict) -> None:
-        """Quiénes faltaron hoy en el curso del que eres profesor jefe.
+        """Quiénes faltaron hoy en el curso del que eres profesor jefe (plegada: solo cuántos).
 
         Recibe el estado ya leído por _refrescar_firmas, para no abrir el
         mismo archivo dos veces.
         """
         if getattr(self, "jefatura_texto", None) is None:
             return
-        texto, color = "", COLOR_TENUE
+        resumen, texto, color = "", "", COLOR_TENUE
         try:
             # Si el archivo es de otro día, no se muestra: valen los de hoy.
-            if completo.get("fecha") != datetime.date.today().strftime("%d/%m/%Y"):
-                self.jefatura_texto.configure(text="")
-                return
-            datos = completo.get("jefatura", {})
-            curso = datos.get("curso", "")
-            if datos.get("estado"):
-                texto = f"{curso} · {datos['estado']}"
-            elif datos:
-                ausentes, atrasadas = datos.get("ausentes", []), datos.get("atrasadas", [])
-                if ausentes:
-                    nombres = ", ".join(ausentes[:4])
-                    if len(ausentes) > 4:
-                        nombres += f" y {len(ausentes) - 4} más"
-                    texto = f"{curso} · {len(ausentes)} ausentes: {nombres}"
-                    color = COLOR_TEXTO
-                else:
-                    texto = f"{curso} · sin ausentes hoy"
-                if atrasadas:
-                    texto += f" · {len(atrasadas)} atrasadas: " + ", ".join(atrasadas[:3])
-        except (OSError, ValueError):
-            texto = ""
-        self.jefatura_texto.configure(text=texto, fg=color)
+            if completo.get("fecha") == datetime.date.today().strftime("%d/%m/%Y"):
+                datos = completo.get("jefatura", {})
+                curso = datos.get("curso", "")
+                if datos.get("estado"):
+                    resumen = texto = f"{curso} · {datos['estado']}"
+                elif datos:
+                    ausentes, atrasadas = datos.get("ausentes", []), datos.get("atrasadas", [])
+                    if ausentes:
+                        nombres = ", ".join(ausentes[:4])
+                        if len(ausentes) > 4:
+                            nombres += f" y {len(ausentes) - 4} más"
+                        texto = f"{curso} · {len(ausentes)} ausentes: {nombres}"
+                        resumen = f"{curso} · {len(ausentes)} ausente{'s' if len(ausentes) != 1 else ''}"
+                        color = COLOR_TEXTO
+                    else:
+                        resumen = texto = f"{curso} · sin ausentes hoy"
+                    if atrasadas:
+                        texto += f" · {len(atrasadas)} atrasadas: " + ", ".join(atrasadas[:3])
+                        resumen += f" · {len(atrasadas)} atrasada{'s' if len(atrasadas) != 1 else ''}"
+        except (OSError, ValueError, AttributeError, TypeError):
+            resumen = texto = ""
+        self._texto_jefatura, self._color_jefatura = (resumen, texto), color
+        self._pintar_hoy()
 
     def _color_lengueta(self) -> str:
         """Pulsa mientras algo corre; si no, destello de resultado; si no, alerta del libro."""
@@ -4217,6 +6627,10 @@ class Barra(RAIZ_TK):
         archivos = [a for a in self.tk.splitlist(evento.data) if os.path.isfile(a)]
         if not archivos:
             return
+        if self.bloqueada:                 # se subirían al banco del profesor anterior: primero el PIN
+            self._desplegar(tomar_foco=False)
+            self.pedir_pin()
+            return
         self._desplegar()
         # Si ya hay un correo o una ventana de arrastre abiertos, el archivo se suma a ellos:
         # así dos guías soltadas una tras otra salen juntas, en el mismo correo.
@@ -4234,7 +6648,7 @@ class Barra(RAIZ_TK):
         """Checklist propia, guardada en este PC. No sale a internet."""
         self.lista_abierta = self._leer_estado().get("lista_abierta", False)
         self.titulo_lista = tk.Label(self.panel, text="", bg=COLOR_FONDO, fg=COLOR_ACENTO,
-                                     font=(self.fuente.cget("family"), 9, "bold"),
+                                     font=letra(9, "bold"),
                                      anchor="w", cursor="hand2")
         self.titulo_lista.pack(fill="x", padx=10, pady=(6, 1))
         self.titulo_lista.bind("<Button-1>", lambda _e: self.alternar_lista())
@@ -4356,13 +6770,13 @@ class Barra(RAIZ_TK):
             marca.pack(side="left")
             texto = tk.Label(fila, text=tarea.get("texto", ""), bg=COLOR_FONDO,
                              fg=COLOR_TENUE if hecha else COLOR_TEXTO,
-                             font=(self.fuente.cget("family"), 9,
+                             font=letra(9,
                                    "overstrike" if hecha else "normal"),
                              anchor="w", justify="left", cursor="hand2",
                              wraplength=self.ancho - int(50 * self.escala))
             texto.pack(side="left", fill="x", expand=True, padx=(4, 2))
             quitar = tk.Label(fila, text="✕", bg=COLOR_FONDO, fg=COLOR_SUAVE,
-                              font=(self.fuente.cget("family"), 8), cursor="hand2")
+                              font=letra(8), cursor="hand2")
             quitar.pack(side="right")
             for w_ in (marca, texto):
                 w_.bind("<Button-1>", lambda _e, k=i: self._marcar_tarea(k))
@@ -4374,7 +6788,7 @@ class Barra(RAIZ_TK):
 
         if any(t.get("hecha") for t in tareas):
             limpiar = tk.Label(self.items_lista, text="borrar las hechas", bg=COLOR_FONDO,
-                               fg=COLOR_TENUE, font=(self.fuente.cget("family"), 8),
+                               fg=COLOR_TENUE, font=letra(8),
                                anchor="w", cursor="hand2")
             limpiar.pack(fill="x", padx=10, pady=(2, 0))
             limpiar.bind("<Button-1>", lambda _e: self._limpiar_hechas())
@@ -4392,84 +6806,13 @@ class Barra(RAIZ_TK):
         if self.desplegada:
             self._colocar()
 
-    def _construir_bandeja(self, envoltura: int) -> None:
-        """Campo para anotar: Enter guarda la nota para el asistente."""
-        marco = tk.Frame(self.panel, bg=COLOR_BOTON)
-        marco.pack(fill="x", padx=6, pady=(2, 2))
-        tk.Frame(marco, bg=COLOR_ACENTO, width=3).pack(side="left", fill="y")
-        self.entrada = tk.Entry(marco, bg=COLOR_BOTON, fg=COLOR_TENUE, bd=0,
-                                font=self.fuente, insertbackground=COLOR_TEXTO,
-                                highlightthickness=0)
-        self.entrada.pack(side="left", fill="x", expand=True, padx=(6, 8), pady=6)
-        self.entrada.insert(0, MARCA_AGUA)
-        # Con overrideredirect Windows no le da el foco sola: hay que forzarlo.
-        self.entrada.bind("<Button-1>", lambda _e: (self.focus_force(),
-                                                    self.entrada.focus_set()))
-        self.entrada.bind("<FocusIn>", self._entrar_bandeja)
-        self.entrada.bind("<FocusOut>", self._salir_bandeja)
-        self.entrada.bind("<Return>", self._guardar_nota)
-        self.entrada.bind("<Escape>", self._cancelar_nota)
-
-        self.bandeja_estado = tk.Label(self.panel, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                                       font=(self.fuente.cget("family"), 8), anchor="w",
-                                       wraplength=envoltura, justify="left")
-        self.bandeja_estado.pack(fill="x", padx=12, pady=(0, 2))
-
-    def _entrar_bandeja(self, _evento=None) -> None:
-        if self.entrada.get() == MARCA_AGUA:
-            self.entrada.delete(0, "end")
-        self.entrada.configure(fg=COLOR_TEXTO)
-
-    def _salir_bandeja(self, _evento=None) -> None:
-        if not self.entrada.get().strip():
-            self.entrada.delete(0, "end")
-            self.entrada.insert(0, MARCA_AGUA)
-            self.entrada.configure(fg=COLOR_TENUE)
-
-    def _guardar_nota(self, _evento=None) -> str:
-        texto = self.entrada.get().strip()
-        if not texto or texto == MARCA_AGUA:
-            return "break"
-        try:
-            anotar(texto)
-        except OSError as exc:  # noqa: BLE001
-            registrar("no se pudo guardar la nota", traceback.format_exc())
-            self._pintar_bandeja(f"No se pudo guardar: {exc}", error=True)
-            return "break"
-        self.entrada.delete(0, "end")
-        self._pintar_bandeja(f"✓ Guardado · {self._texto_pendientes()}")
-        return "break"
-
-    def _cancelar_nota(self, _evento=None) -> str:
-        """Escape limpia la nota; sin el 'break' cerraría la barra entera."""
-        self.entrada.delete(0, "end")
-        self._salir_bandeja()
-        self.cuerpo.focus_set()
-        return "break"
-
-    def _refrescar_bandeja(self) -> None:
-        if getattr(self, "bandeja_estado", None):
-            self._pintar_bandeja(self._texto_pendientes())
-
-    @staticmethod
-    def _texto_pendientes() -> str:
-        cuantas = pendientes()
-        if cuantas == 0:
-            return "Sin notas pendientes"
-        if cuantas == 1:
-            return "1 nota esperando al asistente"
-        return f"{cuantas} notas esperando al asistente"
-
-    def _pintar_bandeja(self, texto: str, error: bool = False) -> None:
-        self.bandeja_estado.configure(text=texto, fg=COLOR_ERROR if error else COLOR_TENUE)
-
     def _anotando(self) -> bool:
-        """Mientras escribes una nota, la barra no se pliega."""
-        entrada = getattr(self, "entrada", None)
+        """Mientras escribes en «Tu lista», la barra no se pliega."""
+        entrada = getattr(self, "entrada_tarea", None)
         if entrada is None:
             return False
         try:
-            if entrada.get().strip() not in ("", MARCA_AGUA):
+            if entrada.get().strip() not in ("", MARCA_TAREA):
                 return True
             return self.focus_get() is entrada
         except (tk.TclError, KeyError):
@@ -4477,131 +6820,332 @@ class Barra(RAIZ_TK):
 
     # --------------------------------------------------------------- botones
     def _construir_botones(self) -> None:
-        """(Re)arma los botones. Se llama de nuevo al recargar el .json."""
+        """(Re)arma los botones en grupos plegables, con los ★ favoritos arriba. Se llama de nuevo al recargar el .json.
+
+        Un grupo cerrado no arma sus botones hasta que se abre: la barra abre más rápido y ocupa menos alto.
+        """
         for hijo in self.cuerpo.winfo_children():
             hijo.destroy()
         self.filas_boton = {}
-        self.primer_boton = None
-        grupo_actual = None
-        for h in self.herramientas:
-            if h.get("grupo") and h["grupo"] != grupo_actual:
-                grupo_actual = h["grupo"]
-                tk.Label(self.cuerpo, text=grupo_actual.upper(), bg=COLOR_FONDO,
-                         fg=COLOR_ACENTO, font=(self.fuente.cget("family"), 8, "bold"),
-                         anchor="w").pack(fill="x", padx=10, pady=(8, 2))
-            nombre = h.get("nombre", "(sin nombre)")
-            contenedor = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
-            contenedor.pack(fill="x", padx=6, pady=1)
-            if self.primer_boton is None:
-                self.primer_boton = contenedor
-            # takefocus: se llega con Tab y se acciona con Enter o espacio.
-            fila = tk.Frame(contenedor, bg=COLOR_BOTON, cursor="hand2", takefocus=True,
-                            highlightthickness=1, highlightbackground=COLOR_BOTON,
-                            highlightcolor=COLOR_ACENTO)
-            fila.pack(fill="x")
-            # Franja lateral: se enciende en morado claro al pasar el mouse.
-            franja = tk.Frame(fila, bg=COLOR_BOTON, width=3)
-            franja.pack(side="left", fill="y")
-            icono = tk.Label(fila, text=h.get("icono", "•"), bg=COLOR_BOTON,
-                             fg=COLOR_TEXTO, font=self.fuente_icono, width=2)
-            icono.pack(side="left", padx=(5, 2))
-            # Estado de la actividad (◐ en proceso, ✓ listo, ⚠ avisos, ✕ error).
-            estado = tk.Label(fila, text="", bg=COLOR_BOTON, fg=COLOR_TENUE,
-                              font=("Segoe UI Symbol", 11), width=2)
-            estado.pack(side="right", padx=(0, 6))
-            columna = tk.Frame(fila, bg=COLOR_BOTON)
-            columna.pack(side="left", fill="x", expand=True, padx=(0, 4), pady=4)
-            texto = tk.Label(columna, text=nombre, bg=COLOR_BOTON,
-                             fg=COLOR_TENUE, font=self.fuente, anchor="w")
-            texto.pack(fill="x")
-            sub = tk.Label(columna, text="", bg=COLOR_BOTON, fg=COLOR_SUAVE,
-                           font=(self.fuente.cget("family"), 8), anchor="w")
-            barra = tk.Canvas(contenedor, height=3, bg=COLOR_BOTON, bd=0,
-                              highlightthickness=0)
-
-            partes = (fila, icono, texto, columna, sub, estado)
-            self.filas_boton[nombre] = {"estado": estado, "sub": sub, "barra": barra,
-                                        "texto": texto}
-            for widget in partes:
-                widget.bind("<Enter>", lambda _e, p=partes, fr=franja, x=h:
-                            (self._resaltar(p, fr, True), self._tip(self._ayuda_boton(x))))
-                widget.bind("<Leave>", lambda _e, p=partes, fr=franja:
-                            (self._resaltar(p, fr, False), self._tip("")))
-                widget.bind("<ButtonPress-1>", lambda _e, p=partes:
-                            self._pintar(*p, COLOR_PULSADO))
-                widget.bind("<ButtonRelease-1>", lambda _e, x=h, p=partes, fr=franja:
-                            (self._pintar(*p, COLOR_HOVER), abrir(x, self)))
-            # Teclado: el foco se ve igual que pasar el mouse; flechas y Tab navegan.
-            fila.bind("<FocusIn>", lambda _e, p=partes, fr=franja, x=h:
-                      (self._resaltar(p, fr, True), self._tip(self._ayuda_boton(x)),
-                       self._mostrar_fila(_e.widget)))
-            fila.bind("<FocusOut>", lambda _e, p=partes, fr=franja:
-                      (self._resaltar(p, fr, False), self._tip("")))
-            for tecla in ("<Return>", "<space>"):
-                fila.bind(tecla, lambda _e, x=h: (abrir(x, self), "break")[1])
-            fila.bind("<Down>", lambda e: (e.widget.tk_focusNext().focus_set(), "break")[1])
-            fila.bind("<Up>", lambda e: (e.widget.tk_focusPrev().focus_set(), "break")[1])
-
+        self.grupos_ui = {}
+        visibles = [h for h in self.herramientas if isinstance(h, dict) and not h.get("oculto")]
+        grupos: dict[str, list[dict]] = {}
+        favoritos = self._favoritos(visibles)
+        if favoritos:
+            grupos[GRUPO_FAVORITOS] = favoritos
+        for h in visibles:
+            grupos.setdefault(h.get("grupo") or "Otros", []).append(h)
+        guardados = self.preferencias.get("grupos_abiertos")
+        abiertos = set(guardados) if isinstance(guardados, list) else {next(iter(grupos), "")}
+        for grupo, botones in grupos.items():
+            self._construir_grupo(grupo, botones, grupo in abiertos)
         self.estado_texto = tk.Label(self.cuerpo, text="", bg=COLOR_FONDO, fg=COLOR_TENUE,
-                                     font=(self.fuente.cget("family"), 9),
-                                     wraplength=self.ancho - int(20 * self.escala),
+                                     font=letra(9), wraplength=self.ancho - int(20 * self.escala),
                                      justify="left", anchor="w")
-        self.estado_texto.pack(fill="x", padx=10, pady=(4, 2))
+        self.estado_texto.pack(fill="x", padx=10, pady=(6, 8))
+        if getattr(self, "soltar_roto", False):
+            self._sin_soltar()
+        self._actualizar_primer_boton()
+        self._refrescar_filas()
 
-        pie = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
-        pie.pack(fill="x", padx=10, pady=(0, 6))
-        self.pie_botones = pie
-        # La barra mide ~210 px: los enlaces van en filas para que ninguno quede oculto a la derecha.
-        fila_pie1 = tk.Frame(pie, bg=COLOR_FONDO)
-        fila_pie1.pack(fill="x")
-        fila_pie2 = tk.Frame(pie, bg=COLOR_FONDO)
-        fila_pie2.pack(fill="x")
-        fila_pie3 = tk.Frame(pie, bg=COLOR_FONDO)
-        fila_pie3.pack(fill="x")
-        for texto_enlace, ruta in (("Ver registro", LOG), ("Editar botones", CONFIG)):
-            enlace = tk.Label(fila_pie1, text=texto_enlace, bg=COLOR_FONDO, fg=COLOR_SUAVE,
-                              font=(self.fuente.cget("family"), 9, "underline"),
-                              cursor="hand2", takefocus=True, highlightthickness=1,
-                              highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
-            enlace.pack(side="left", padx=(0, 10))
-            enlace.bind("<Button-1>", lambda _e, r=ruta: self._abrir_archivo(r))
-            for tecla in ("<Return>", "<space>"):
-                enlace.bind(tecla, lambda _e, r=ruta: (self._abrir_archivo(r), "break")[1])
-            enlace.bind("<Enter>", lambda _e, w=enlace: w.configure(fg=COLOR_TEXTO))
-            enlace.bind("<Leave>", lambda _e, w=enlace: w.configure(fg=COLOR_SUAVE))
-        tour = tk.Label(fila_pie2, text="Ver tour", bg=COLOR_FONDO, fg=COLOR_SUAVE,
-                        font=(self.fuente.cget("family"), 9, "underline"), cursor="hand2",
-                        takefocus=True, highlightthickness=1,
-                        highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
-        tour.pack(side="left", padx=(0, 10))
-        tour.bind("<Button-1>", lambda _e: self.iniciar_tour())
+    @staticmethod
+    def _favoritos(visibles: list[dict]) -> list[dict]:
+        """Los ★ favoritos del docente; si nunca eligió, los iniciales que tenga (en ese orden)."""
+        if any("favorito" in h for h in visibles):
+            return [h for h in visibles if h.get("favorito")]
+        por_nombre = {h.get("nombre"): h for h in visibles}
+        return [por_nombre[n] for n in FAVORITOS_INICIALES if n in por_nombre]
+
+    def _construir_grupo(self, grupo: str, botones: list[dict], abierto: bool) -> None:
+        cabecera = tk.Label(self.cuerpo, text="", bg=COLOR_FONDO, fg=COLOR_ACENTO, font=letra(9, "bold"),
+                            anchor="w", cursor="hand2", takefocus=True, highlightthickness=1,
+                            highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
+        cabecera.pack(fill="x", padx=6, pady=(8, 2))
+        caja = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
+        self.grupos_ui[grupo] = {"cabecera": cabecera, "caja": caja, "botones": botones,
+                                 "armado": False, "abierto": abierto}
+        cabecera.bind("<Button-1>", lambda _e, g=grupo: self.alternar_grupo(g))
         for tecla in ("<Return>", "<space>"):
-            tour.bind(tecla, lambda _e: (self.iniciar_tour(), "break")[1])
-        tour.bind("<Enter>", lambda _e: tour.configure(fg=COLOR_TEXTO))
-        tour.bind("<Leave>", lambda _e: tour.configure(fg=COLOR_SUAVE))
-        buscar = tk.Label(fila_pie2, text="Buscar actualizaciones", bg=COLOR_FONDO, fg=COLOR_SUAVE,
-                          font=(self.fuente.cget("family"), 9, "underline"), cursor="hand2",
-                          takefocus=True, highlightthickness=1,
-                          highlightbackground=COLOR_FONDO, highlightcolor=COLOR_ACENTO)
-        buscar.pack(side="left", padx=(0, 10))
-        buscar.bind("<Button-1>", lambda _e: self._buscar_actualizacion_manual())
+            cabecera.bind(tecla, lambda _e, g=grupo: (self.alternar_grupo(g), "break")[1])
+        cabecera.bind("<FocusIn>", lambda e: self._mostrar_fila(e.widget))
+        cabecera.bind("<Down>", lambda e: (e.widget.tk_focusNext().focus_set(), "break")[1])
+        cabecera.bind("<Up>", lambda e: (e.widget.tk_focusPrev().focus_set(), "break")[1])
+        if abierto:
+            self._armar_grupo(grupo)
+        self._pintar_cabecera_grupo(grupo)
+
+    def _armar_grupo(self, grupo: str) -> None:
+        """Crea los botones del grupo (la primera vez que se abre) y lo muestra."""
+        info = self.grupos_ui[grupo]
+        if not info["armado"]:
+            for h in info["botones"]:
+                self._construir_fila_boton(info["caja"], h)
+            info["armado"] = True
+        info["caja"].pack(fill="x", after=info["cabecera"])
+
+    def alternar_grupo(self, grupo: str) -> None:
+        info = self.grupos_ui.get(grupo)
+        if info is None:
+            return
+        info["abierto"] = not info["abierto"]
+        if info["abierto"]:
+            self._armar_grupo(grupo)
+            for h in info["botones"]:
+                self._refrescar_fila(h.get("nombre", ""))
+        else:
+            info["caja"].pack_forget()
+        self._pintar_cabecera_grupo(grupo)
+        self.preferencias = guardar_preferencias(
+            grupos_abiertos=[g for g, i in self.grupos_ui.items() if i["abierto"]])
+        self._actualizar_primer_boton()
+        self._recolocar()
+
+    def _pintar_cabecera_grupo(self, grupo: str) -> None:
+        info = self.grupos_ui.get(grupo)
+        if info is None:
+            return
+        en_marcha = any(h.get("nombre") in self.corriendo for h in info["botones"])
+        marca = f"  {cuadro_de_giro()}" if en_marcha and not info["abierto"] else ""
+        try:
+            info["cabecera"].configure(text=f"{'▾' if info['abierto'] else '▸'} {grupo.upper()} · "
+                                            f"{len(info['botones'])}{marca}")
+        except tk.TclError:
+            pass
+
+    def _actualizar_primer_boton(self) -> None:
+        """El primer botón a la vista (lo resalta el recorrido); si todo está plegado, la primera cabecera."""
+        for info in self.grupos_ui.values():
+            if info["abierto"] and info["caja"].winfo_children():
+                self.primer_boton = info["caja"].winfo_children()[0]
+                return
+        primero = next(iter(self.grupos_ui.values()), None)
+        self.primer_boton = primero["cabecera"] if primero else None
+
+    def _construir_fila_boton(self, caja: tk.Misc, h: dict) -> tk.Frame:
+        nombre = h.get("nombre", "(sin nombre)")
+        contenedor = tk.Frame(caja, bg=COLOR_FONDO)
+        contenedor.pack(fill="x", padx=6, pady=1)
+        # takefocus: se llega con Tab y se acciona con Enter o espacio.
+        fila = tk.Frame(contenedor, bg=COLOR_BOTON, cursor="hand2", takefocus=True,
+                        highlightthickness=1, highlightbackground=COLOR_BOTON,
+                        highlightcolor=COLOR_ACENTO)
+        fila.pack(fill="x")
+        # Franja lateral: se enciende en el color de acento al pasar el mouse.
+        franja = tk.Frame(fila, bg=COLOR_BOTON, width=3)
+        franja.pack(side="left", fill="y")
+        icono = tk.Label(fila, text=h.get("icono", "•"), bg=COLOR_BOTON,
+                         fg=COLOR_TEXTO, font=self.fuente_icono, width=2)
+        icono.pack(side="left", padx=(5, 2))
+        # Estado de la actividad (◐ en proceso, ✓ listo, ⚠ avisos, ✕ error).
+        estado = tk.Label(fila, text="", bg=COLOR_BOTON, fg=COLOR_TENUE,
+                          font=letra(11, familia="Segoe UI Symbol"), width=2)
+        estado.pack(side="right", padx=(0, 6))
+        columna = tk.Frame(fila, bg=COLOR_BOTON)
+        columna.pack(side="left", fill="x", expand=True, padx=(0, 4), pady=4)
+        texto = tk.Label(columna, text=nombre, bg=COLOR_BOTON,
+                         fg=COLOR_TEXTO, font=self.fuente, anchor="w")
+        texto.pack(fill="x")
+        sub = tk.Label(columna, text="", bg=COLOR_BOTON, fg=COLOR_SUAVE,
+                       font=letra(9), anchor="w")
+        barra = tk.Canvas(contenedor, height=3, bg=COLOR_BOTON, bd=0,
+                          highlightthickness=0)
+
+        partes = (fila, icono, texto, columna, sub, estado)
+        self.filas_boton.setdefault(nombre, []).append({"estado": estado, "sub": sub, "barra": barra,
+                                                        "texto": texto})
+        for widget in partes:
+            widget.bind("<Enter>", lambda _e, p=partes, fr=franja, x=h:
+                        (self._resaltar(p, fr, True), self._tip(self._ayuda_boton(x))))
+            widget.bind("<Leave>", lambda _e, p=partes, fr=franja:
+                        (self._resaltar(p, fr, False), self._tip("")))
+            widget.bind("<ButtonPress-1>", lambda _e, p=partes:
+                        self._pintar(*p, COLOR_PULSADO))
+            widget.bind("<ButtonRelease-1>", lambda _e, x=h, p=partes, fr=franja:
+                        (self._pintar(*p, COLOR_HOVER), abrir(x, self)))
+            widget.bind("<Button-3>", lambda e, x=h: self._menu_boton(e, x))
+        # Teclado: el foco se ve igual que pasar el mouse; flechas y Tab navegan.
+        fila.bind("<FocusIn>", lambda _e, p=partes, fr=franja, x=h:
+                  (self._resaltar(p, fr, True), self._tip(self._ayuda_boton(x)),
+                   self._mostrar_fila(_e.widget)))
+        fila.bind("<FocusOut>", lambda _e, p=partes, fr=franja:
+                  (self._resaltar(p, fr, False), self._tip("")))
         for tecla in ("<Return>", "<space>"):
-            buscar.bind(tecla, lambda _e: (self._buscar_actualizacion_manual(), "break")[1])
-        buscar.bind("<Enter>", lambda _e: buscar.configure(fg=COLOR_TEXTO))
-        buscar.bind("<Leave>", lambda _e: buscar.configure(fg=COLOR_SUAVE))
+            fila.bind(tecla, lambda _e, x=h: (abrir(x, self), "break")[1])
+        fila.bind("<Down>", lambda e: (e.widget.tk_focusNext().focus_set(), "break")[1])
+        fila.bind("<Up>", lambda e: (e.widget.tk_focusPrev().focus_set(), "break")[1])
+        return contenedor
+
+    def _menu_boton(self, evento, herramienta: dict) -> None:
+        """Clic derecho en un botón: sumarlo o quitarlo de ★ Favoritos, o abrirlo."""
+        visibles = [h for h in self.herramientas if isinstance(h, dict) and not h.get("oculto")]
+        es_favorito = herramienta.get("nombre") in {h.get("nombre") for h in self._favoritos(visibles)}
+        menu = tk.Menu(self, tearoff=0, bg=COLOR_BOTON, fg=COLOR_TEXTO, activebackground=COLOR_HOVER,
+                       activeforeground=COLOR_TEXTO, font=letra(10), bd=0)
+        menu.add_command(label="★ Quitar de favoritos" if es_favorito else "☆ Agregar a favoritos",
+                         command=lambda: self.alternar_favorito(herramienta))
+        menu.add_command(label="Abrir", command=lambda: abrir(herramienta, self))
+        try:
+            menu.tk_popup(evento.x_root, evento.y_root)
+        finally:
+            menu.grab_release()
+
+    def alternar_favorito(self, herramienta: dict) -> None:
+        """Suma o quita un botón de ★ Favoritos y lo guarda en los botones de este docente."""
+        nombre = herramienta.get("nombre")
+        ruta = self._config_propia()
+        try:
+            botones, formato = leer_botones(ruta)
+        except (OSError, ValueError) as exc:
+            registrar("no se pudo guardar el favorito", str(exc))
+            self._tip("No pude guardar el favorito: el archivo de botones tiene un error.")
+            return
+        quedo = alternar_favorito_en(botones, nombre)
+        try:
+            guardar_botones(ruta, botones, formato)
+        except OSError as exc:
+            registrar("no se pudo guardar el favorito", str(exc))
+            self._tip("No pude guardar el favorito.")
+            return
+        self.herramientas = botones
+        self._marca_config = self._marca(CONFIG)       # ya se rehace aquí: que la vigilancia no lo repita
+        self._reconstruir_botones()
+        self._tip(f"«{nombre}» {'quedó en' if quedo else 'salió de'} favoritos")
+
+    def _config_propia(self) -> str:
+        """personal\\herramientas.json, los botones de este docente (si aún no existe se crea desde la plantilla)."""
+        global CONFIG
+        propio = os.path.join(rutas.PERSONAL, "herramientas.json")
+        if os.path.abspath(CONFIG) != os.path.abspath(propio):
+            os.makedirs(rutas.PERSONAL, exist_ok=True)
+            if not os.path.isfile(propio):
+                shutil.copy2(CONFIG, propio)
+            CONFIG = propio
+        return CONFIG
+
+    def _reconstruir_botones(self) -> None:
+        self._construir_botones()
+        self.update_idletasks()
+        self._recalcular_alto()
+        if self.desplegada:
+            self._colocar()
+
+    # ------------------------------------------------------------ ajustes y cierre
+    # ------------------------------------------------- PIN (equipos con varios profesores)
+    def _mostrar_bloqueo(self) -> None:
+        """Bloqueada: un velo tapa la tarjeta «Hoy», la lista y los botones hasta que alguien escriba su PIN.
+
+        Lo de abajo sigue armado y al día (el libro se sigue revisando); solo no se puede usar.
+        """
+        velo = tk.Frame(self.area, bg=COLOR_FONDO)
+        velo.place(x=0, y=0, relwidth=1, relheight=1)
+        velo.lift()
+        self.velo = velo
+        envoltura = self.ancho - int(28 * self.escala)
+        tk.Label(velo, text="🔒", bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                 font=letra(20, familia="Segoe UI Emoji")).pack(pady=(int(22 * self.escala), 4))
+        tk.Label(velo, text=NOMBRE_COMPLETO or PERFIL or "Barra Profe", bg=COLOR_FONDO, fg=COLOR_TEXTO,
+                 font=letra(10, "bold"), wraplength=envoltura, justify="center").pack()
+        tk.Label(velo, text="Esta barra la usan varios profesores: escribe tu PIN para usarla.", bg=COLOR_FONDO,
+                 fg=COLOR_TENUE, font=letra(9), wraplength=envoltura, justify="center").pack(pady=(4, 12))
+        boton_texto(velo, "Escribir mi PIN", self.pedir_pin, principal=True).pack()
+        otro = tk.Label(velo, text="Soy otro profesor", bg=COLOR_FONDO, fg=COLOR_ACENTO, font=letra(9, "underline"),
+                        cursor="hand2", takefocus=True)
+        otro.pack(pady=(12, 0))
+        for evento in ("<Button-1>", "<Return>"):
+            otro.bind(evento, lambda _e: VentanaDocentes(self))
+
+    def pedir_pin(self) -> None:
+        """La ventana del PIN del profesor activo (si ya está abierta, se trae al frente)."""
+        abiertas = [w for w in self.winfo_children() if isinstance(w, VentanaPin)]
+        if abiertas:
+            abiertas[0].lift()
+            return
+        VentanaPin(self, PERFIL, self.entrar_como)
+
+    def entrar_como(self, clave: str) -> None:
+        """PIN correcto: queda desbloqueada para ese profesor (si es otro, la barra se cambia a él)."""
+        estaba = self.bloqueada
+        self.bloqueada = False
+        DESBLOQUEO["activo"] = True
+        if clave != PERFIL:
+            elegir_docente(clave, self)
+            if PERFIL != clave:            # no se pudo cambiar (había una tarea corriendo): queda como estaba
+                self.bloqueada = estaba
+                DESBLOQUEO["activo"] = not estaba
+            else:
+                self.after(800, self._avisar_nuevos)    # lo que el colegio le mandó a quien acaba de entrar
+            return
+        if self.velo is not None:
+            self.velo.destroy()
+            self.velo = None
+        registrar(f"barra desbloqueada ({clave})")
+        self.after(800, self._avisar_nuevos)
+
+    def bloquear(self) -> None:
+        """Bloquea la barra: el siguiente profesor entra con su PIN (o se cambia a su cuenta con el suyo)."""
+        if not equipo_compartido():
+            return
+        self.bloqueada = True
+        DESBLOQUEO["activo"] = False
+        registrar("barra bloqueada")
+        self.reconstruir()                 # cierra las ventanas abiertas y pone el velo
+
+    def abrir_ajustes(self, pestana: str | None = None) -> None:
+        if self.bloqueada:                 # Ajustes deja cambiar cosas del profesor: primero el PIN
+            self.pedir_pin()
+            return
+        abiertas = [w for w in self.winfo_children() if isinstance(w, VentanaAjustes)]
+        if abiertas:
+            abiertas[0].lift()
+            if pestana:
+                abiertas[0].pestanas.elegir(pestana)
+            return
+        VentanaAjustes(self, pestana)
+
+    def abrir_sin_clases(self) -> None:
+        """«Días sin clases» (feriados, vacaciones): cambia lo que cuenta como pendiente, así que con PIN."""
+        if self.bloqueada:
+            self.pedir_pin()
+            return
+        abiertas = [w for w in self.winfo_children() if isinstance(w, VentanaSinClases)]
+        if abiertas:
+            abiertas[0].lift()
+            return
+        VentanaSinClases(self)
+
+    def pedir_cerrar(self) -> None:
+        """La ✕ ya no cierra de golpe: pregunta si esconderla (sigue trabajando) o cerrarla."""
+        abiertas = [w for w in self.winfo_children() if isinstance(w, VentanaCerrar)]
+        if abiertas:
+            abiertas[0].lift()
+            return
+        VentanaCerrar(self)
+
+    # ------------------------------------------------------------ actualizaciones
+    def _pintar_aviso_actualizacion(self, texto: str) -> None:
+        etiqueta = getattr(self, "aviso_actualizacion", None)
+        if etiqueta is None:
+            return
+        try:
+            etiqueta.configure(text=texto)
+            if texto and not etiqueta.winfo_manager():
+                etiqueta.pack(fill="x", after=self.cabecera)
+            elif not texto and etiqueta.winfo_manager():
+                etiqueta.pack_forget()
+            self._recolocar()
+        except tk.TclError:
+            pass
+
+    def _buscar_periodica(self) -> None:
+        """Busca una versión nueva ahora y vuelve a mirar en 6 horas (la barra pasa días abierta)."""
         from barra_utiles import leer_version
         version = leer_version(CARPETA)
-        if version:                                  # versión de Barra, discreta, al final de la fila
-            tk.Label(fila_pie3, text=f"v{version}", bg=COLOR_FONDO, fg=COLOR_SUAVE,
-                     font=(self.fuente.cget("family"), 9)).pack(side="left")
-        self.aviso_actualizacion = tk.Label(fila_pie3, text="", bg=COLOR_FONDO, fg=COLOR_ACENTO, cursor="hand2",
-                                            font=(self.fuente.cget("family"), 9, "underline"), justify="left",
-                                            wraplength=self.ancho - int(70 * self.escala))
-        self.aviso_actualizacion.pack(side="left", padx=(8, 0))
-        if version and not getattr(self, "_busqueda_actualizacion", False):
-            self._busqueda_actualizacion = True          # una sola consulta por sesión, sin bloquear la ventana
+        if version:
             threading.Thread(target=self._buscar_actualizacion, args=(version,), daemon=True).start()
-        self._refrescar_filas()
+        try:
+            self.after(MS_BUSCAR_ACTUALIZACION, self._buscar_periodica)
+        except tk.TclError:
+            pass
 
     def _buscar_actualizacion(self, version: str, manual: bool = False) -> None:
         """Consulta GitHub en segundo plano. Solo la búsqueda manual avisa cuando no hay nada o no hay red."""
@@ -4611,13 +7155,14 @@ class Barra(RAIZ_TK):
         except Exception:                                # respuesta rara: la barra sigue como siempre
             info, hubo_red = None, False
         def mostrar():
-            if not info:
-                self.aviso_actualizacion.configure(text="")
             if info:
                 self._mostrar_actualizacion(info)
                 if manual:
                     self._preguntar_actualizar(info)
-            elif manual:
+                return
+            if manual or self.aviso_actualizacion.cget("text").startswith("Buscando"):
+                self._pintar_aviso_actualizacion("")
+            if manual:
                 if hubo_red:
                     texto = f"Ya tienes la última versión (v{version})."
                 else:
@@ -4638,11 +7183,11 @@ class Barra(RAIZ_TK):
         if not version:
             messagebox.showinfo("Barra Profe", "No encuentro el número de versión de esta barra (archivo VERSION).")
             return
-        self.aviso_actualizacion.configure(text="Buscando actualizaciones…")
+        self._pintar_aviso_actualizacion("Buscando actualizaciones…")
         threading.Thread(target=self._buscar_actualizacion, args=(version, True), daemon=True).start()
 
     def _mostrar_actualizacion(self, info: dict) -> None:
-        self.aviso_actualizacion.configure(text=f"Hay una versión nueva: {info['version']}")
+        self._pintar_aviso_actualizacion(f"⬆ Hay una versión nueva: {info['version']} · clic para actualizar")
         self.aviso_actualizacion.bind("<Button-1>", lambda _e: self._preguntar_actualizar(info))
 
     def _preguntar_actualizar(self, info: dict) -> None:
@@ -4652,7 +7197,7 @@ class Barra(RAIZ_TK):
                 f"Versión {info['version']} disponible.\n\nQué cambió:\n{notas[:900]}\n\n"
                 f"Tu perfil, tus datos y tus botones no se tocan; se guarda una copia del código actual.\n\n¿Actualizar ahora?"):
             return
-        self.aviso_actualizacion.configure(text="Actualizando… no cierres la barra")
+        self._pintar_aviso_actualizacion("Actualizando… no cierres la barra")
         threading.Thread(target=self._actualizar, args=(info,), daemon=True).start()
 
     def _actualizar(self, info: dict) -> None:
@@ -4667,21 +7212,23 @@ class Barra(RAIZ_TK):
         except Exception as exc:                         # nunca dejar la ventana colgada
             texto, color = f"No se pudo actualizar: {exc}", "error"
         def fin():
-            self.aviso_actualizacion.configure(text="" if color == "info" else "No se pudo actualizar")
+            self._pintar_aviso_actualizacion("" if color == "info" else "No se pudo actualizar")
             (messagebox.showinfo if color == "info" else messagebox.showerror)("Barra Profe", texto)
         self.after(0, fin)
 
     def _mostrar_fila(self, fila: tk.Misc) -> None:
-        """Si el foco de teclado cae fuera de la vista, desplaza hasta mostrarlo."""
+        """Si el foco de teclado cae fuera de la vista, desplaza hasta mostrarlo (la cabecera no se desplaza)."""
         if not getattr(self, "con_scroll", False):
             return
         try:
+            if not str(fila).startswith(str(self.panel) + "."):
+                return
             arriba = fila.winfo_rooty() - self.panel.winfo_rooty()
             abajo = arriba + fila.winfo_height()
             if arriba < self.desplazamiento:
                 self._desplazar(arriba - self.desplazamiento - 8)
-            elif abajo > self.desplazamiento + self.alto:
-                self._desplazar(abajo - self.desplazamiento - self.alto + 8)
+            elif abajo > self.desplazamiento + self.alto_area:
+                self._desplazar(abajo - self.desplazamiento - self.alto_area + 8)
         except tk.TclError:
             pass
 
@@ -4699,8 +7246,8 @@ class Barra(RAIZ_TK):
 
     # ------------------------------------------------------------------- tour
     def _tour_inicial(self) -> None:
-        """La primera vez que se abre la barra, se ofrece el recorrido de bienvenida."""
-        if tour_pendiente(TOUR):
+        """La primera vez que se abre la barra, se ofrece el recorrido de bienvenida (bloqueada, después del PIN)."""
+        if tour_pendiente(TOUR) and not self.bloqueada:
             self.iniciar_tour()
 
     def iniciar_tour(self) -> None:
@@ -4714,11 +7261,10 @@ class Barra(RAIZ_TK):
 
     def _objetivo_tour(self, paso: str) -> tk.Misc | None:
         return {"barra": getattr(self, "cabecera", None),
-                "hoy": getattr(getattr(self, "ahora_texto", None), "master", None),
+                "hoy": getattr(self, "tarjeta_hoy", None),
                 "lista": getattr(self, "titulo_lista", None),
-                "notas": getattr(getattr(self, "entrada", None), "master", None),
                 "botones": self.primer_boton,
-                "pie": self.pie_botones}.get(paso)
+                "pie": getattr(self, "boton_ajustes", None)}.get(paso)
 
     def _quitar_resalte(self) -> None:
         for marco in self._marcos_resalte:
@@ -4726,22 +7272,24 @@ class Barra(RAIZ_TK):
         self._marcos_resalte = []
 
     def _resaltar_region(self, widget: tk.Misc | None) -> None:
-        """Dibuja un marco de color alrededor de `widget` y lo trae a la vista."""
+        """Dibuja un marco de color alrededor de `widget` y lo trae a la vista (también si está en la cabecera)."""
         self._quitar_resalte()
         if widget is None:
             return
         try:
             self.update_idletasks()
             self._mostrar_fila(widget)
-            x = widget.winfo_rootx() - self.panel.winfo_rootx() - 3
-            y = widget.winfo_rooty() - self.panel.winfo_rooty() - 3
-            ancho, alto = widget.winfo_width() + 6, widget.winfo_height() + 6
+            self.update_idletasks()
+            x = max(0, widget.winfo_rootx() - self.winfo_rootx() - 3)
+            y = max(0, widget.winfo_rooty() - self.winfo_rooty() - 3)
+            ancho = min(widget.winfo_width() + 6, self.winfo_width() - x)
+            alto = min(widget.winfo_height() + 6, self.winfo_height() - y)
             grosor = 3
             for (px, py, pa, pl) in ((x, y, ancho, grosor), (x, y + alto - grosor, ancho, grosor),
                                      (x, y, grosor, alto), (x + ancho - grosor, y, grosor, alto)):
-                marco = tk.Frame(self.panel, bg=COLOR_ACENTO)
+                marco = tk.Frame(self, bg=COLOR_ACENTO)
                 marco.place(x=px, y=py, width=pa, height=pl)
-                marco.lift()
+                tk.Misc.lift(marco)
                 self._marcos_resalte.append(marco)
         except tk.TclError:
             pass
@@ -4772,6 +7320,8 @@ class Barra(RAIZ_TK):
             except OSError as exc:
                 registrar("no se pudo guardar el resultado de la actividad", str(exc))
             color = color_de_estado(estado)
+            if self.preferencias.get("sonido_al_terminar") and estado != "cancelado":
+                self._sonar_fin(estado)
             self._fin_barra[nombre] = (color, time.time() + 5)
             if not self.corriendo:
                 self._destello = color
@@ -4796,8 +7346,78 @@ class Barra(RAIZ_TK):
 
     def _avisar(self, consola: "Consola", estado: str, resultado: dict) -> None:
         titulo = f"{ESTADOS[estado]['icono']}  {consola.titulo}: {ESTADOS[estado]['texto'].lower()}"
+        try:
+            segundos = int(self.preferencias.get("aviso_segundos", 6))
+        except (TypeError, ValueError):
+            segundos = 6
         Aviso(self, estado, titulo, resultado["resumen"],
-              lambda: self._mostrar_actividad(consola))
+              lambda: self._mostrar_actividad(consola), segundos=segundos)
+
+    @staticmethod
+    def _sonar_fin(estado: str) -> None:
+        """Un sonido corto de Windows al terminar una tarea (si el docente lo pidió)."""
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_OK if estado == "completado" else winsound.MB_ICONEXCLAMATION)
+        except Exception:  # noqa: BLE001  (sin sonido no pasa nada)
+            pass
+
+    # --------------------------------------------------- rehacer en vivo
+    def reconstruir(self, ajustes: str | None = None) -> None:
+        """Rehace la barra con la apariencia y el docente actuales, sin cerrar el programa.
+
+        Antes, cambiar el color o el profesor cerraba la barra y abría otra. Las ventanas auxiliares se cierran
+        (tienen los colores de antes); las actividades en curso siguen. Con `ajustes`, vuelve a abrir Ajustes en esa
+        pestaña.
+        """
+        self._quitar_resalte()
+        for ventana in list(self.winfo_children()):
+            if isinstance(ventana, tk.Toplevel) and not isinstance(ventana, Consola):
+                try:
+                    ventana.destroy()
+                except tk.TclError:
+                    pass
+        self._tour = None
+        self.configure(bg=COLOR_FONDO)
+        self.ancho = int(ANCHO * self.escala)
+        self.fuente.configure(size=tema.tamano_letra(9, ESCALA_LETRA))
+        self.fuente_icono.configure(size=tema.tamano_letra(13, ESCALA_LETRA))
+        self.preferencias = leer_preferencias()
+        desplegada = self.desplegada
+        for nombre in ("lengueta", "contenedor", "indicador"):
+            parte = getattr(self, nombre, None)
+            if parte is not None:
+                parte.destroy()
+        self.filas_boton, self.grupos_ui = {}, {}
+        self._construir_lengueta()
+        self._construir_panel()
+        self._construir_indicador()
+        self.desplazamiento, self.con_scroll, self.desplegada = 0, False, True
+        self._actualizar_saludo()
+        self.update_idletasks()
+        self._recalcular_alto()
+        if not desplegada:
+            self._plegar(forzar=True)
+        self._colocar()
+        self._pintar_lengueta()
+        self.actualizar_mensajes()
+        if ajustes:
+            self.after(60, lambda: self.abrir_ajustes(ajustes))
+
+    def cambiar_docente(self, clave: str) -> None:
+        """Pasa la barra al docente `clave` sin cerrarla: sus cursos, su libro, su lista y su apariencia."""
+        self.detener_mensajeria()
+        cargar_docente(clave)
+        self.ejecuciones = cargar_ejecuciones(EJECUCIONES)
+        self._alerta_libro = False
+        self._destello = None
+        self._texto_libro, self._color_libro = ("", ""), COLOR_TENUE
+        self._texto_jefatura, self._color_jefatura = ("", ""), COLOR_TENUE
+        self._horario_pedido = False      # el otro docente tiene su propio «Mi horario»
+        self.reconstruir()
+        self._iniciar_mensajeria()
+        self.actualizar_mensajes()
+        registrar(f"barra con el docente «{clave}»")
 
     def _mostrar_actividad(self, consola: "Consola") -> None:
         try:
@@ -4854,21 +7474,23 @@ class Barra(RAIZ_TK):
         return ESTADOS[estado]["icono"], color_de_estado(estado), texto
 
     def _refrescar_fila(self, nombre: str) -> None:
-        fila = self.filas_boton.get(nombre)
-        if not fila:
-            return
-        try:
-            icono, color, texto = self._info_fila(nombre)
-            fila["estado"].configure(text=icono, fg=color)
-            if texto:
-                fila["sub"].configure(text=texto)
-                if not fila["sub"].winfo_ismapped():
-                    fila["sub"].pack(fill="x")
-            else:
-                fila["sub"].pack_forget()
-            self._dibujar_barrita(nombre, fila["barra"])
-        except tk.TclError:
-            pass
+        for fila in self.filas_boton.get(nombre, []):
+            try:
+                icono, color, texto = self._info_fila(nombre)
+                fila["estado"].configure(text=icono, fg=color)
+                if texto:
+                    fila["sub"].configure(text=texto)
+                    if not fila["sub"].winfo_ismapped():
+                        fila["sub"].pack(fill="x")
+                else:
+                    fila["sub"].pack_forget()
+                self._dibujar_barrita(nombre, fila["barra"])
+            except tk.TclError:
+                pass
+        # Un grupo plegado muestra en su cabecera que algo suyo está corriendo.
+        for grupo, info in self.grupos_ui.items():
+            if any(h.get("nombre") == nombre for h in info["botones"]):
+                self._pintar_cabecera_grupo(grupo)
 
     def _refrescar_filas(self) -> None:
         for nombre in list(self.filas_boton):
@@ -4920,10 +7542,8 @@ class Barra(RAIZ_TK):
             w.configure(bg=color)
 
     def _resaltar(self, partes, franja, encendido: bool) -> None:
-        """Fila bajo el mouse: fondo más claro, texto blanco y franja morada."""
-        fila, icono, texto = partes[:3]
+        """Fila bajo el mouse: fondo más claro y franja del color de acento."""
         self._pintar(*partes, COLOR_HOVER if encendido else COLOR_BOTON)
-        texto.configure(fg=COLOR_TEXTO if encendido else COLOR_TENUE)
         franja.configure(bg=COLOR_ACENTO if encendido else COLOR_BOTON)
 
     def _tip(self, mensaje: str) -> None:
@@ -4948,20 +7568,17 @@ class Barra(RAIZ_TK):
 
     def _recargar_config(self) -> None:
         try:
-            with open(CONFIG, encoding="utf-8") as f:
+            with open(CONFIG, encoding="utf-8-sig") as f:
                 nuevas = json.load(f)
             if not isinstance(nuevas, list):
                 raise ValueError("herramientas.json debe ser una lista de botones")
         except (OSError, ValueError) as exc:
             registrar("herramientas.json con error: se mantienen los botones", str(exc))
             self._tip("Los botones tienen un error de escritura (comas o comillas). "
-                      "Usa «Editar botones» para corregirlo.")
+                      "Usa «Editar botones» en ⚙ Ajustes → Ayuda para corregirlo.")
             return
         self.herramientas = nuevas
-        self._construir_botones()
-        self.update_idletasks()
-        self._recalcular_alto()
-        self._colocar()
+        self._reconstruir_botones()
         self._tip(f"Herramientas actualizadas ({len(nuevas)})")
         registrar(f"herramientas.json recargado ({len(nuevas)} botones)")
 
@@ -5007,12 +7624,10 @@ class Barra(RAIZ_TK):
             registrar("hay un programa más nuevo: la barra se reinicia sola")
             reabrir_barra()
             return
-        self._desplegar()
+        self._desplegar()                    # el atajo de teclado abre la barra (bloqueada, pide el PIN)
         self.attributes("-topmost", True)
         self.lift()
         self.focus_force()
-        self.entrada.focus_set()
-        self._entrar_bandeja()
 
     # ------------------------------------------------------------- mensajería interna
     def _iniciar_mensajeria(self) -> None:
@@ -5053,7 +7668,7 @@ class Barra(RAIZ_TK):
         VentanaMensajes(self)
 
     def actualizar_mensajes(self) -> None:
-        """Pinta en el panel cuántos mensajes hay sin leer (o no pinta nada si está inactiva)."""
+        """Pinta en el panel cuántos mensajes hay sin leer (la línea solo aparece si la mensajería está activa)."""
         etiqueta = getattr(self, "mensajes_texto", None)
         if etiqueta is None:
             return
@@ -5061,6 +7676,8 @@ class Barra(RAIZ_TK):
         try:
             if nodo is None:
                 etiqueta.configure(text="")
+                if etiqueta.winfo_manager():
+                    etiqueta.pack_forget()
                 return
             sin_leer = nodo.no_leidos()
             if sin_leer:
@@ -5068,6 +7685,8 @@ class Barra(RAIZ_TK):
                                         f"{'s' if sin_leer != 1 else ''}", fg=COLOR_ACENTO)
             else:
                 etiqueta.configure(text=f"💬 Mensajes · {len(nodo.en_linea())} en línea", fg=COLOR_TENUE)
+            if not etiqueta.winfo_manager():
+                etiqueta.pack(fill="x", padx=10, pady=(0, 4), after=self.tarjeta_hoy)
         except tk.TclError:
             pass
 
@@ -5133,17 +7752,21 @@ class Barra(RAIZ_TK):
         """El alto de la barra, sin pasarse de la pantalla.
 
         En los notebook del colegio la pantalla mide 720 px y la barra con
-        todos los botones pasa de 1100: lo que sobraba quedaba fuera y no se
-        podía pulsar. Cuando no cabe, el panel se desplaza con la rueda (tras
-        hacer clic en la barra), con RePág/AvPág o arrastrando la barrita.
+        todos los botones pasaba de 1100: lo que sobraba quedaba fuera y no se
+        podía pulsar. La cabecera queda siempre a la vista; cuando el resto no
+        cabe, se desplaza con la rueda (tras hacer clic en la barra), con
+        RePág/AvPág o arrastrando la barrita.
         """
-        self.alto_contenido = max(self.panel.winfo_reqheight(), int(120 * self.escala))
+        partes = (self.cabecera, self.aviso_actualizacion, self.separador_cabecera)
+        self.alto_cabecera = sum(w.winfo_reqheight() for w in partes if w.winfo_manager())
+        self.alto_contenido = max(self.panel.winfo_reqheight(), int(80 * self.escala))
         _izq, arriba, _der, abajo = self._area()
         disponible = abajo - arriba
-        self.alto = max(min(self.alto_contenido, disponible), int(120 * self.escala))
+        self.alto = max(min(self.alto_cabecera + self.alto_contenido, disponible), int(120 * self.escala))
+        self.alto_area = max(self.alto - self.alto_cabecera, 1)
         antes = getattr(self, "con_scroll", False)
-        self.con_scroll = self.alto_contenido > self.alto
-        tope = max(0, self.alto_contenido - self.alto)
+        self.con_scroll = self.alto_contenido > self.alto_area
+        tope = max(0, self.alto_contenido - self.alto_area)
         self.desplazamiento = min(getattr(self, "desplazamiento", 0), tope)
         if self.desplegada and (self.con_scroll != antes or self.con_scroll):
             self._ocultar_panel(antes)
@@ -5174,7 +7797,7 @@ class Barra(RAIZ_TK):
         """Mueve el contenido `delta` píxeles (positivo = hacia abajo)."""
         if not self.desplegada or not self.con_scroll:
             return
-        tope = self.alto_contenido - self.alto
+        tope = self.alto_contenido - self.alto_area
         nuevo = int(min(max(self.desplazamiento + delta, 0), tope))
         if nuevo != self.desplazamiento:
             self.desplazamiento = nuevo
@@ -5205,11 +7828,11 @@ class Barra(RAIZ_TK):
         if not (self.desplegada and getattr(self, "con_scroll", False)):
             indicador.place_forget()
             return
-        indicador.place(relx=1.0, x=0, y=0, anchor="ne", relheight=1.0)
+        indicador.place(in_=self.area, relx=1.0, x=0, y=0, anchor="ne", relheight=1.0)
         indicador.delete("all")
-        alto = max(self.alto, 1)
+        alto = max(self.alto_area, 1)
         largo = max(int(alto * alto / self.alto_contenido), 24)
-        tope = max(self.alto_contenido - self.alto, 1)
+        tope = max(self.alto_contenido - self.alto_area, 1)
         arriba = int((alto - largo) * self.desplazamiento / tope)
         ancho = int(indicador.cget("width"))
         indicador.create_rectangle(1, arriba, ancho - 1, arriba + largo,
@@ -5217,34 +7840,37 @@ class Barra(RAIZ_TK):
         tk.Misc.lift(indicador)      # Canvas.lift es otra cosa (tag_raise)
 
     def _arrastrar_indicador(self, evento) -> None:
-        alto = max(self.alto, 1)
+        alto = max(self.alto_area, 1)
         largo = max(int(alto * alto / self.alto_contenido), 24)
         fraccion = min(max((evento.y - largo / 2) / max(alto - largo, 1), 0), 1)
-        self._desplazar(fraccion * (self.alto_contenido - self.alto) - self.desplazamiento)
+        self._desplazar(fraccion * (self.alto_contenido - self.alto_area) - self.desplazamiento)
 
-    def _desplegar(self) -> None:
+    def _desplegar(self, tomar_foco: bool = True) -> None:
         if self.desplegada:
             return
         self.lengueta.pack_forget()
+        self.contenedor.pack(fill="both", expand=True)
         self.desplegada = True
         self._mostrar_panel()
         self._actualizar_saludo()
         self._colocar()
-        try:
-            self.focus_force()      # con el foco, la rueda del mouse funciona
-        except tk.TclError:
-            pass
+        if tomar_foco:                  # al abrirse sola (mouse encima) no le quita el foco a lo que estabas haciendo
+            try:
+                self.focus_force()      # con el foco, la rueda del mouse funciona
+            except tk.TclError:
+                pass
+            if self.bloqueada:          # la abrió alguien para usarla: que escriba su PIN
+                self.after(80, self.pedir_pin)
 
     def _actualizar_saludo(self) -> None:
         """Se refresca al desplegarse: así todo calza con la hora real."""
         ahora = datetime.datetime.now()
         meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
                  "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
-        self.saludo.configure(text=saludo(ahora))
-        self.fecha.configure(text=f"{DIAS[ahora.weekday()]} {ahora.day} de "
-                                  f"{meses[ahora.month - 1]} · {ahora:%H:%M}")
+        self.saludo.configure(text=NOMBRE or "Barra Profe")
+        # Corta, para que quepa en una línea de la barra: «mié 14 oct · 21:49».
+        self._texto_fecha = f"{DIAS[ahora.weekday()][:3]} {ahora.day} {meses[ahora.month - 1][:3]} · {ahora:%H:%M}"
         self._refrescar_agenda()
-        self._refrescar_bandeja()
         # Relee la lista por si la editaste con la barra cerrada.
         if getattr(self, "items_lista", None) is not None:
             self._refrescar_lista()
@@ -5253,36 +7879,50 @@ class Barra(RAIZ_TK):
             if self._estado_vencido():
                 self._revisar_libro()
             self._refrescar_firmas()
+        self._pintar_hoy()
 
     def _plegar(self, forzar: bool = False) -> None:
         if self._tour is not None:          # durante el recorrido la barra se queda abierta
             return
         if not self.desplegada or (not forzar and (self.fijada or self._anotando())):
             return
-        self._ocultar_panel()
+        self.contenedor.pack_forget()
         self.lengueta.pack(fill="both", expand=True)
         self.desplegada = False
         self._colocar()
 
     def _vigilar(self) -> None:
-        """Pliega la barra cuando el mouse se va (abrir es solo con clic)."""
+        """Pliega la barra cuando el mouse se va y, si el docente lo eligió, la abre al pasar por la lengüeta."""
         try:
             if not self.senales.empty():
                 self._atender_senal()
+            px, py = self.winfo_pointerxy()
+            x, y = self.winfo_x(), self.winfo_y()
+            ancho, alto = self.winfo_width(), self.winfo_height()
+            dentro = (x - 8 <= px <= x + ancho + 8) and (y - 8 <= py <= y + alto + 8)
             if self.desplegada and not self.fijada:
-                px, py = self.winfo_pointerxy()
-                x, y = self.winfo_x(), self.winfo_y()
-                ancho, alto = self.winfo_width(), self.winfo_height()
-                dentro = (x - 8 <= px <= x + ancho + 8) and (y - 8 <= py <= y + alto + 8)
                 if dentro:
                     self._fuera = 0
                 else:
                     self._fuera += 1
-                    if self._fuera >= CICLOS_FUERA_PARA_PLEGAR:
+                    if self._fuera >= self._ciclos_para_plegar():
                         self._plegar()
+            elif not self.desplegada and self.preferencias.get("abrir_al_pasar"):
+                self._sobre_lengueta = getattr(self, "_sobre_lengueta", 0) + 1 if dentro else 0
+                if self._sobre_lengueta >= 2:          # un instante encima: no se abre al pasar de largo
+                    self._sobre_lengueta = 0
+                    self._desplegar(tomar_foco=False)
         except tk.TclError:
             return
         self.after(MS_VIGILAR_MOUSE, self._vigilar)
+
+    def _ciclos_para_plegar(self) -> int:
+        """Cuántas vueltas de la vigilancia espera fuera del mouse antes de esconderse (Ajustes → Comportamiento)."""
+        try:
+            segundos = float(self.preferencias.get("demora_plegado", CICLOS_FUERA_PARA_PLEGAR * MS_VIGILAR_MOUSE / 1000))
+        except (TypeError, ValueError):
+            segundos = CICLOS_FUERA_PARA_PLEGAR * MS_VIGILAR_MOUSE / 1000
+        return max(1, round(segundos * 1000 / MS_VIGILAR_MOUSE))
 
     def _al_frente(self) -> None:
         """Windows baja el 'siempre encima' cuando otra app se abre completa."""
@@ -5299,7 +7939,7 @@ class Barra(RAIZ_TK):
         self._guardar_estado()
 
     def _pintar_fijada(self) -> None:
-        self.boton_fijar.configure(fg=COLOR_TEXTO if self.fijada else COLOR_TENUE)
+        self.boton_fijar.configure(fg=self._color_boton_cabecera(self.boton_fijar))
 
     # ------------------------------------------------------------------ mover
     def _tomar(self, evento) -> None:

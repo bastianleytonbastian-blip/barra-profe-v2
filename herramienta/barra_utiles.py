@@ -60,6 +60,47 @@ def ahora_y_luego(bloques: list[dict],
     return texto_ahora, texto_luego
 
 
+def leer_json(ruta: str) -> dict:
+    """El contenido de un JSON como diccionario ({} si falta, está roto o no es un diccionario)."""
+    try:
+        with open(ruta, encoding="utf-8-sig") as f:
+            datos = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return datos if isinstance(datos, dict) else {}
+
+
+def bloques_de_horario_webclass(horario: dict, fecha: datetime.date) -> list[dict]:
+    """Bloques de ese día según el horario de WebClass («Mi horario»), para «Ahora / Luego» sin asistente.
+
+    El horario es el de una semana: se toma como la semana tipo (lunes = 0). Devuelve [{titulo, inicio, fin}] en orden.
+    """
+    salida = []
+    for b in horario.get("bloques") or []:
+        if not isinstance(b, dict) or b.get("dia") != fecha.weekday():
+            continue
+        inicio, fin = str(b.get("inicio") or ""), str(b.get("fin") or "")
+        if not (re.fullmatch(r"\d{1,2}:\d{2}", inicio) and re.fullmatch(r"\d{1,2}:\d{2}", fin)):
+            continue
+        titulo = " · ".join(x for x in (str(b.get("curso") or "").strip(), asignatura_corta(b.get("asignatura") or "")) if x)
+        salida.append({"titulo": titulo or "Clase", "inicio": inicio, "fin": fin})
+    return sorted(salida, key=lambda b: minutos(b["inicio"]))
+
+
+def horario_vencido(horario: dict, hoy: datetime.date, dias: int = 7) -> bool:
+    """¿Hay que volver a leer «Mi horario» de WebClass? Sí si nunca se leyó, falló o tiene más de `dias` días."""
+    if not horario.get("bloques") or horario.get("error"):
+        return True
+    m = re.match(r"(\d{1,2})/(\d{1,2})/(\d{4})", str(horario.get("generado") or ""))
+    if not m:
+        return True
+    try:
+        leido = datetime.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        return True
+    return (hoy - leido).days > dias
+
+
 def saludo_para(nombre: str, ahora: datetime.datetime | None = None) -> str:
     """Buenos días / tardes / noches, según la hora."""
     hora = (ahora or datetime.datetime.now()).hour
@@ -110,6 +151,53 @@ def partes_de_comando(texto: str) -> list[str]:
     if not partes:
         raise ValueError("el botón no indica qué subcomando de Webclass ejecutar")
     return partes
+
+
+def opciones_de_pregunta(opciones, hoy: datetime.date | None = None) -> list[dict]:
+    """Opciones ([{texto, valor}]) de un botón «preguntar».
+
+    Con "meses" se calculan: los meses del año escolar hasta hoy, del más reciente al más antiguo. Así la plantilla
+    no lleva fechas escritas a mano (antes decía «Octubre (este mes)» todo el año).
+    """
+    if opciones == "meses":
+        return [{"texto": m["texto"], "valor": m["clave"]} for m in meses_escolares(hoy)]
+    return [o for o in (opciones or []) if isinstance(o, dict) and "texto" in o and "valor" in o]
+
+
+def leer_botones(ruta: str) -> tuple[list[dict], dict]:
+    """Lee un herramientas.json y su formato ({"bom", "crlf"}), para guardarlo después igual que estaba.
+
+    Lanza OSError si no se puede leer y ValueError si no es una lista de botones.
+    """
+    with open(ruta, "rb") as f:
+        crudo = f.read()
+    botones = json.loads(crudo.decode("utf-8-sig"))
+    if not isinstance(botones, list) or not all(isinstance(b, dict) for b in botones):
+        raise ValueError("herramientas.json debe ser una lista de botones")
+    return botones, {"bom": crudo.startswith(b"\xef\xbb\xbf"), "crlf": b"\r\n" in crudo}
+
+
+def guardar_botones(ruta: str, botones: list[dict], formato: dict | None = None,
+                    copia: str | None = None) -> None:
+    """Guarda los botones con el formato que tenía el archivo (BOM y saltos de línea de Windows).
+
+    Comprueba que el resultado sea JSON válido antes de escribir y lo cambia de una sola vez. Con `copia`, deja una
+    copia de seguridad del archivo anterior, solo si no existe ya: la que sirve es la de antes del primer cambio.
+    """
+    formato = formato or {"bom": False, "crlf": True}
+    texto = json.dumps(botones, ensure_ascii=False, indent=2)
+    json.loads(texto)
+    if formato.get("crlf"):
+        texto = texto.replace("\n", "\r\n")
+    if copia and os.path.isfile(ruta) and not os.path.exists(copia):
+        import shutil
+        shutil.copy2(ruta, copia)
+    temporal = f"{ruta}.tmp"
+    with open(temporal, "wb") as f:
+        f.write((b"\xef\xbb\xbf" if formato.get("bom") else b"") + texto.encode("utf-8"))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temporal, ruta)
 
 
 # ---------------------------------------------------------------------- consola
@@ -308,8 +396,12 @@ EXTENSIONES_RECURSOS = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx
                         ".jpg", ".jpeg", ".png", ".mp3", ".wav", ".mp4")
 
 
-def _item(clave: str, titulo: str, grupo: str = "", detalle: str = "") -> dict:
-    return {"clave": clave, "titulo": titulo, "grupo": grupo, "detalle": detalle}
+def _item(clave: str, titulo: str, grupo: str = "", detalle: str = "", sin_clase: dict | None = None) -> dict:
+    """Un ítem con casilla. `sin_clase` ({campo, clave, dia, titulo}) permite marcarlo «no hubo clase» desde la lista."""
+    dato = {"clave": clave, "titulo": titulo, "grupo": grupo, "detalle": detalle}
+    if sin_clase:
+        dato["sin_clase"] = sin_clase
+    return dato
 
 
 def clave_de_bloque(b: dict) -> str:
@@ -328,6 +420,11 @@ def vista_previa_libro(estado: dict | None, hoy: str) -> dict:
     revisado = str(estado.get("revisado", ""))
     hora = revisado.split(" ")[-1] if " " in revisado else ""
     origen = f"Según la revisión de las {hora}." if hora else "Según la última revisión."
+    if estado.get("sin_clases"):
+        return {"titulo": titulo, "puntos": ["Marcaste hoy como día sin clases: no hay nada que registrar."],
+                "items": [], "hay_trabajo": False,
+                "aviso": "Para deshacerlo: «Días sin clases» (en el grupo Webclass o en ⚙ Ajustes → Profesor)."}
+    dia = fecha_de_estado(hoy)
     puntos, items = [], []
     for b in estado.get("sin_registro", []):
         faltan = []
@@ -341,9 +438,10 @@ def vista_previa_libro(estado: dict | None, hoy: str) -> dict:
         detalle = f"se completará: {', '.join(faltan) or 'revisión'}"
         puntos.append(f"{b.get('curso', '?')} {inicio} · {detalle}")
         asignatura = str(b.get("asignatura", "") or "")
-        items.append(_item(clave_de_bloque(b),
-                           f"{b.get('curso', '?')} {inicio}" + (f" · {asignatura}" if asignatura else ""),
-                           str(b.get("curso", "")), detalle))
+        etiqueta = f"{b.get('curso', '?')} {inicio}" + (f" · {asignatura}" if asignatura else "")
+        sin_clase = ({"campo": "bloques", "clave": clave_con_fecha(clave_de_bloque(b), dia),
+                      "dia": dia.isoformat(), "titulo": f"{dia:%d/%m} {etiqueta}"} if dia else None)
+        items.append(_item(clave_de_bloque(b), etiqueta, str(b.get("curso", "")), detalle, sin_clase))
     por_firmar = len(estado.get("sin_firmar", []))
     firma = (f" Quedarán {por_firmar} bloque{'s' if por_firmar != 1 else ''} por firmar: "
              "la firma la haces tú." if por_firmar else "")
@@ -354,16 +452,89 @@ def vista_previa_libro(estado: dict | None, hoy: str) -> dict:
             "aviso": origen + firma}
 
 
-# Asignaturas con que se puede firmar un recurso al subirlo (la clave es la de webclass_recursos.ASIGNATURAS).
+# Asignaturas con que se puede firmar un recurso al subirlo: (clave, nombre que se muestra).
 ASIGNATURAS_SUBIDA = (("ciencias", "Ciencias Naturales"), ("matematica", "Matemática"),
                       ("lenguaje", "Lenguaje y Comunicación"), ("historia", "Historia, Geografía y Cs. Sociales"),
                       ("orientacion", "Orientación"), ("tecnologia", "Tecnología"), ("biologia", "Biología"),
-                      ("quimica", "Química"), ("fisica", "Física"))
+                      ("quimica", "Química"), ("fisica", "Física"), ("filosofia", "Filosofía y Psicología"),
+                      ("integracion", "Programa de Integración Escolar"))
+# Código de cada asignatura en el formulario de recursos de WebClass («selectSectorLocal»). Es la ÚNICA tabla: de aquí la
+# toman el subidor (webclass_recursos.ASIGNATURAS) y el planificador, así no se desfasan.
+ID_ASIGNATURA = {"ciencias": 3, "matematica": 2, "lenguaje": 1, "historia": 4, "orientacion": 9, "tecnologia": 7,
+                 "biologia": 12, "quimica": 14, "fisica": 13, "filosofia": 16, "integracion": 107}
 
 
 def _sin_tildes(texto: str) -> str:
     import unicodedata
     return "".join(c for c in unicodedata.normalize("NFD", texto or "") if unicodedata.category(c) != "Mn").lower()
+
+
+def asignaturas_de_la_cuenta(perfil: dict | None) -> list[tuple[str, str, int]]:
+    """(clave, nombre, código de WebClass) de las asignaturas con que esta cuenta puede firmar un recurso.
+
+    Si al configurar la cuenta se leyó la lista de WebClass (perfil["asignaturas_webclass"]), se usa esa: así aparecen
+    Inglés, Artes, Música, Religión… Si no, la tabla de siempre. Las que están en la tabla conservan su clave
+    («ciencias»), para que lo ya elegido siga valiendo; las demás se llaman «wc<código>».
+    """
+    tabla = [(clave, nombre, ID_ASIGNATURA[clave]) for clave, nombre in ASIGNATURAS_SUBIDA]
+    claves = {codigo: clave for clave, _nombre, codigo in tabla}
+    leidas, vistas = [], set()
+    for item in (perfil or {}).get("asignaturas_webclass") or []:
+        try:
+            codigo, nombre = int(item["id"]), " ".join(str(item["nombre"]).split())
+        except (KeyError, TypeError, ValueError):
+            continue
+        if codigo > 0 and nombre and codigo not in vistas:
+            vistas.add(codigo)
+            leidas.append((claves.get(codigo, f"wc{codigo}"), nombre, codigo))
+    return leidas or tabla
+
+
+def asignatura_de_texto(texto: str, asignaturas: list[tuple[str, str, int]]) -> tuple[str, str, int] | None:
+    """La asignatura a la que se refiere un texto libre («Orientacion», «musica», «Ed. Física»…). None si ninguna.
+
+    Primero igual al nombre o a la clave (sin tildes); después la de nombre más corto que empiece con el texto (o con
+    la que empiece el texto): «educacion fisica» -> «Educación Física y Salud».
+    """
+    def norma(x: str) -> str:
+        return " ".join(_sin_tildes(x).replace(".", " ").split())
+
+    t = norma(texto)
+    if not t:
+        return None
+    for asignatura in asignaturas:
+        if t in (norma(asignatura[1]), asignatura[0], norma(asignatura_corta(asignatura[1]))):
+            return asignatura
+    parecidas = [a for a in asignaturas if _sin_tildes(a[1]).startswith(t) or t.startswith(_sin_tildes(a[1]))
+                 or t.startswith(a[0])]
+    return min(parecidas, key=lambda a: len(a[1])) if parecidas else None
+
+
+def carpeta_con_asignatura(nombre: str, asignaturas: list[tuple[str, str, int]]) -> tuple[int, tuple[str, str, int]] | None:
+    """Una carpeta del buzón con nivel y asignatura en el nombre («5 basico Orientacion», «7° Básico Música»):
+    (código de nivel, asignatura). None si no empieza con un nivel o no se reconoce la asignatura."""
+    m = re.fullmatch(r"\s*(\d)\s*°?\s*(basico|medio)\b[\s\-–·:]*(.+)", _sin_tildes(nombre or ""))
+    if not m:
+        return None
+    asignatura = asignatura_de_texto(m.group(3), asignaturas)
+    if not asignatura:
+        return None
+    return (20 if m.group(2) == "basico" else 30) + int(m.group(1)), asignatura
+
+
+_CORTAS = {"ciencias naturales": "Ciencias", "historia, geografia y ciencias sociales": "Historia",
+           "historia, geografia y cs. sociales": "Historia", "lenguaje y comunicacion": "Lenguaje",
+           "lengua y literatura": "Lenguaje", "educacion fisica y salud": "Ed. Física", "artes visuales": "Artes",
+           "programa de integracion escolar": "PIE", "filosofia y psicologia": "Filosofía"}
+
+
+def asignatura_corta(nombre: str) -> str:
+    """Nombre corto para el horario y la tarjeta «Hoy»: «Ciencias Naturales» -> «Ciencias»."""
+    limpio = " ".join(str(nombre or "").split())
+    if _sin_tildes(limpio) in _CORTAS:
+        return _CORTAS[_sin_tildes(limpio)]
+    primera = re.split(r",| y |\(", limpio)[0].strip()
+    return primera if len(primera) <= 14 else primera[:13].rstrip() + "…"
 
 
 def asignatura_sugerida(perfil: dict) -> str:
@@ -373,9 +544,19 @@ def asignatura_sugerida(perfil: dict) -> str:
         n = _sin_tildes(nombre)
         cuenta[n] = cuenta.get(n, 0) + 1
     principal = max(cuenta, key=cuenta.get) if cuenta else ""
+    if perfil.get("asignaturas_webclass") and principal:
+        exacta = next((a for a in asignaturas_de_la_cuenta(perfil) if _sin_tildes(a[1]) == principal), None)
+        if exacta:
+            return exacta[0]
     # La palabra que aparece primero manda: «Historia, Geografía y Ciencias Sociales» es Historia, no Ciencias.
     encontradas = [(principal.index(clave), clave) for clave, _ in ASIGNATURAS_SUBIDA if clave in principal]
     return min(encontradas)[1] if encontradas else "ciencias"
+
+
+def codigo_de_asignatura(clave: str, perfil: dict | None = None) -> int | None:
+    """Código de WebClass de una clave de asignatura, según la lista de la cuenta y, si no está, la tabla."""
+    codigo = next((c for k, _n, c in asignaturas_de_la_cuenta(perfil) if k == clave), None)
+    return codigo if codigo is not None else ID_ASIGNATURA.get(clave)
 
 
 def ruta_preferencia_subida(personal: str, perfil: str) -> str:
@@ -383,21 +564,22 @@ def ruta_preferencia_subida(personal: str, perfil: str) -> str:
     return os.path.join(personal, f"subida_{perfil}.json")
 
 
-def leer_preferencia_subida(ruta: str) -> dict:
-    """{'asignatura': clave o '', 'preguntar': bool}. Sin archivo o roto: no hay preferencia y se pregunta."""
-    try:
-        with open(ruta, encoding="utf-8-sig") as f:
-            datos = json.load(f)
-    except (OSError, ValueError):
-        datos = {}
-    if not isinstance(datos, dict):
-        datos = {}
-    clave = datos.get("asignatura") if datos.get("asignatura") in dict(ASIGNATURAS_SUBIDA) else ""
+def _claves_validas(validas) -> set:
+    return set(validas) if validas is not None else set(dict(ASIGNATURAS_SUBIDA))
+
+
+def leer_preferencia_subida(ruta: str, validas=None) -> dict:
+    """{'asignatura': clave o '', 'preguntar': bool}. Sin archivo o roto: no hay preferencia y se pregunta.
+
+    validas: claves aceptadas (las de la cuenta, ver asignaturas_de_la_cuenta); por omisión, las de la tabla.
+    """
+    datos = leer_json(ruta)
+    clave = datos.get("asignatura") if datos.get("asignatura") in _claves_validas(validas) else ""
     return {"asignatura": clave, "preguntar": not (clave and datos.get("preguntar") is False)}
 
 
-def guardar_preferencia_subida(ruta: str, asignatura: str, preguntar: bool) -> None:
-    if asignatura not in dict(ASIGNATURAS_SUBIDA):
+def guardar_preferencia_subida(ruta: str, asignatura: str, preguntar: bool, validas=None) -> None:
+    if asignatura not in _claves_validas(validas):
         raise ValueError(f"Asignatura desconocida: {asignatura}")
     escribir_atomico(ruta, json.dumps({"asignatura": asignatura, "preguntar": bool(preguntar)}, ensure_ascii=False, indent=2))
 
@@ -445,7 +627,7 @@ def vista_previa_simulacion(titulo: str, lineas: list[str], codigo: int | None =
             puntos.append(m.group(1).strip()[:90])
         elif re.match(r"^\s*\[SALTADA\]", linea, re.IGNORECASE):
             saltadas += 1
-    propuestos = [_item(i["clave"], i["titulo"], i["grupo"], i["detalle"])
+    propuestos = [_item(i["clave"], i["titulo"], i["grupo"], i["detalle"], i.get("sin_clase"))
                   for i in (items or []) if i["estado"] == "propuesto"]
     no_pude = [i for i in (items or []) if i["estado"] in ("pendiente", "error")]
     if codigo not in (0, None):
@@ -482,30 +664,263 @@ def contar_firmas(lineas: list[str]) -> int:
     return cuenta
 
 
+# ------------------------------------------------------- PIN de cada profesor
+# En un equipo con varios profesores cada uno tiene un PIN de 4 números. No es por seguridad: es para no usar por
+# error la barra (y el libro) de otro. Se guarda solo su huella (PBKDF2 con sal propia), nunca el PIN.
+PIN_VALIDO = re.compile(r"\d{4}")
+ITERACIONES_PIN = 120_000
+
+
+def ruta_pin(personal: str, perfil: str) -> str:
+    """Un archivo por profesor: personal\\pin_<cuenta>.json."""
+    return os.path.join(personal, f"pin_{perfil}.json")
+
+
+def _huella_pin(pin: str, sal: bytes, iteraciones: int) -> str:
+    import hashlib
+    return hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), sal, iteraciones).hex()
+
+
+def tiene_pin(ruta: str) -> bool:
+    datos = leer_json(ruta)
+    return bool(datos.get("sal") and datos.get("huella"))
+
+
+def guardar_pin(ruta: str, pin: str) -> None:
+    """Guarda (o reemplaza) el PIN. ValueError si no son 4 números."""
+    if not PIN_VALIDO.fullmatch(pin or ""):
+        raise ValueError("El PIN son 4 números.")
+    sal = os.urandom(16)
+    os.makedirs(os.path.dirname(ruta) or ".", exist_ok=True)
+    escribir_atomico(ruta, json.dumps({"sal": sal.hex(), "huella": _huella_pin(pin, sal, ITERACIONES_PIN),
+                                       "iteraciones": ITERACIONES_PIN}, indent=1))
+
+
+def pin_correcto(ruta: str, pin: str) -> bool:
+    import hmac
+    datos = leer_json(ruta)
+    if not PIN_VALIDO.fullmatch(str(pin or "")):
+        return False
+    try:
+        sal, iteraciones = bytes.fromhex(datos["sal"]), int(datos.get("iteraciones") or ITERACIONES_PIN)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return hmac.compare_digest(_huella_pin(str(pin), sal, iteraciones), str(datos.get("huella", "")))
+
+
+def marcar_desbloqueo(ruta: str, perfil: str, segundos: int = 120) -> None:
+    """La barra se va a reabrir sola (actualización, cambio de color…): la nueva no vuelve a pedir el PIN a quien ya
+    lo escribió, si parte con el mismo profesor dentro de `segundos`."""
+    import time
+    escribir_atomico(ruta, json.dumps({"perfil": perfil, "hasta": time.time() + segundos}))
+
+
+def desbloqueo_vigente(ruta: str, perfil: str) -> bool:
+    """¿La barra anterior dejó a este profesor desbloqueado hace un momento? Sirve una sola vez (se borra al leerlo)."""
+    import time
+    datos = leer_json(ruta)
+    try:
+        os.remove(ruta)
+    except OSError:
+        pass
+    try:
+        return datos.get("perfil") == perfil and float(datos.get("hasta") or 0) > time.time()
+    except (TypeError, ValueError):
+        return False
+
+
+# --------------------------------------------------------------- mis registros
+# Los tres registros que la barra deja en CSV, para verlos en la ventana «Mis registros» (sin abrir Excel).
+# fecha / curso / estado: la columna con que se filtra cada cosa ("" si ese registro no la tiene).
+TIPOS_REGISTRO = {
+    "Libro": {"fecha": "fecha_clase", "curso": "curso", "estado": "estado",
+              "columnas": (("fecha_clase", "Clase del"), ("curso", "Curso"), ("hora", "Hora"), ("asignatura", "Asignatura"),
+                           ("clase", "Clase"), ("estado", "Estado"), ("firma", "Firma"))},
+    "Subidas": {"fecha": "fecha", "curso": "carpeta", "estado": "estado",
+                "columnas": (("fecha", "Fecha"), ("archivo", "Archivo"), ("carpeta", "Nivel"), ("id_recurso", "Id"),
+                             ("estado", "Estado"))},
+    "Tareas": {"fecha": "fecha_clase", "curso": "curso", "estado": "",
+               "columnas": (("fecha_clase", "Clase del"), ("curso", "Curso"), ("clase", "Clase"),
+                            ("alumnas_asignadas", "Asignadas"), ("fecha_asignacion", "Asignada el"))},
+}
+
+
+def pestana_de_registro(destino: str) -> str | None:
+    """Qué pestaña de «Mis registros» corresponde al destino de un botón (los botones «Registro de…» de siempre)."""
+    d = (destino or "").upper().replace("/", "\\")
+    if "%REGISTRO_LIBRO%" in d:
+        return "Libro"
+    if "%REGISTRO_TAREAS%" in d:
+        return "Tareas"
+    if d.endswith("REGISTRO_SUBIDAS.CSV"):
+        return "Subidas"
+    return None
+
+
+def leer_registro(ruta: str) -> list[dict]:
+    """Filas de un CSV de registro (separado con ; o con ,), de la más nueva a la más vieja. [] si no existe."""
+    import csv
+    import io
+    try:
+        with open(ruta, encoding="utf-8-sig", newline="") as f:
+            texto = f.read()
+    except OSError:
+        return []
+    if not texto.strip():
+        return []
+    primera = texto.splitlines()[0]
+    separador = ";" if primera.count(";") > primera.count(",") else ","
+    lector = csv.DictReader(io.StringIO(texto), delimiter=separador)
+    filas = []
+    for fila in lector:
+        limpia = {k.strip(): (v or "").strip() for k, v in fila.items() if k is not None and isinstance(v, (str, type(None)))}
+        sobrante = fila.get(None)            # una fila con más campos que el encabezado (un «;» dentro de un texto)
+        if sobrante and lector.fieldnames:
+            ultima = lector.fieldnames[-1].strip()
+            limpia[ultima] = separador.join([limpia.get(ultima, ""), *(str(x) for x in sobrante)]).strip(separador)
+        filas.append(limpia)
+    return filas[::-1]
+
+
+def fecha_de_registro(texto: str) -> datetime.date | None:
+    """«17/10/2026», «17/10/2026 08:30» o «2026-10-17» -> fecha. None si no se entiende."""
+    texto = (texto or "").strip()
+    for patron, orden in ((r"(\d{1,2})/(\d{1,2})/(\d{4})", (3, 2, 1)), (r"(\d{4})-(\d{2})-(\d{2})", (1, 2, 3))):
+        m = re.match(patron, texto)
+        if m:
+            try:
+                return datetime.date(*(int(m.group(i)) for i in orden))
+            except ValueError:
+                return None
+    return None
+
+
+def estado_corto(texto: str) -> str:
+    """«PENDIENTE: no hay clase con esa fecha…» -> «pendiente» (para agrupar en el filtro)."""
+    return (texto or "").split(":")[0].strip().lower()
+
+
+def desde_periodo(periodo: str, hoy: datetime.date) -> datetime.date | None:
+    """Primer día de «semana» (desde el lunes) o «mes»; None para «todo»."""
+    if periodo == "semana":
+        return hoy - datetime.timedelta(days=hoy.weekday())
+    if periodo == "mes":
+        return hoy.replace(day=1)
+    return None
+
+
+def filtrar_registro(filas: list[dict], tipo: str, desde: datetime.date | None = None, curso: str = "",
+                     estado: str = "", docente: str = "") -> list[dict]:
+    """Filas de ese registro desde una fecha, de un curso y de un estado. Con `docente`, las subidas de otro docente
+    del mismo PC no se muestran (el registro de subidas es uno solo por equipo)."""
+    cfg = TIPOS_REGISTRO[tipo]
+    salida = []
+    for fila in filas:
+        if desde is not None:
+            fecha = fecha_de_registro(fila.get(cfg["fecha"], ""))
+            if fecha is None or fecha < desde:
+                continue
+        if curso and fila.get(cfg["curso"], "") != curso:
+            continue
+        if estado and estado_corto(fila.get(cfg["estado"], "")) != estado:
+            continue
+        autor = fila.get("docente", "")
+        if docente and autor and autor.lower() != docente.lower():
+            continue
+        salida.append(fila)
+    return salida
+
+
+def ordenar_por_fecha(filas: list[dict], tipo: str) -> list[dict]:
+    """De la fecha más nueva a la más vieja (la del registro manda; a igual fecha, queda lo último anotado primero)."""
+    columna = TIPOS_REGISTRO[tipo]["fecha"]
+    return sorted(filas, key=lambda f: fecha_de_registro(f.get(columna, "")) or datetime.date.min, reverse=True)
+
+
+def opciones_de_registro(filas: list[dict], tipo: str) -> tuple[list[str], list[str]]:
+    """(cursos, estados) que aparecen en el registro, para los filtros."""
+    cfg = TIPOS_REGISTRO[tipo]
+    cursos = sorted({f.get(cfg["curso"], "") for f in filas} - {""})
+    estados = sorted({estado_corto(f.get(cfg["estado"], "")) for f in filas} - {""}) if cfg["estado"] else []
+    return cursos, estados
+
+
 # ------------------------------------------------------------------------- tour
-TOUR_VERSION = 1
+TOUR_VERSION = 2          # subir el número hace que el recorrido vuelva a aparecer una vez (2: barra rediseñada)
 TOUR_PASOS = (
     {"id": "barra", "titulo": "Tu barra",
-     "texto": "Se esconde en el borde de la pantalla. Un clic en la lengüeta la abre, "
-              "Escape la esconde y la ✕ la cierra. Arrastra esta cabecera para moverla."},
+     "texto": "Se esconde en el borde de la pantalla: un clic en la lengüeta la abre y Escape la esconde. "
+              "Arrastra esta cabecera para moverla; el 📌 la deja fija abierta y la ✕ te pregunta si "
+              "esconderla o cerrarla."},
     {"id": "hoy", "titulo": "Tu día",
-     "texto": "Aquí ves qué clase tienes ahora y cuál viene. Debajo está el estado de tu "
-              "libro: bloques sin firmar o sin registrar."},
+     "texto": "Qué clase tienes ahora y el estado de tu libro: bloques sin firmar o sin registrar. "
+              "Un clic en «HOY» muestra el detalle (qué viene después, quiénes faltaron)."},
     {"id": "lista", "titulo": "Tu lista",
      "texto": "Anota pendientes, márcalos con un clic y bórralos con la ✕. Se guarda sola "
               "en este equipo."},
-    {"id": "notas", "titulo": "Notas rápidas",
-     "texto": "Escribe aquí algo para tu asistente y aprieta Enter: él lo agenda o lo "
-              "anota como tarea."},
     {"id": "botones", "titulo": "Los botones",
-     "texto": "Cada botón hace una tarea. Al pulsarlo ves una barra de carga y su estado: "
-              "◐ en proceso, ✓ listo, ⚠ con avisos, ✕ error. Antes de escribir en Webclass "
-              "te muestro una vista previa con casillas: marcas lo que quieres que se aplique "
-              "y lo demás no se toca."},
-    {"id": "pie", "titulo": "Si algo falla",
-     "texto": "«Ver registro» y «Editar botones» ayudan cuando algo no sale. Puedes repetir "
-              "este recorrido cuando quieras con «Ver tour»."},
+     "texto": "Arriba quedan tus ★ favoritos; los demás están en grupos que se abren con un clic. "
+              "Clic derecho en cualquier botón para sumarlo o quitarlo de favoritos. Al pulsar uno "
+              "ves su avance y su estado (◐ en proceso, ✓ listo, ⚠ con avisos, ✕ error), y antes de "
+              "escribir en Webclass te muestro una vista previa con casillas."},
+    {"id": "pie", "titulo": "Ajustes y ayuda",
+     "texto": "En ⚙ están el color, el cambio de profesor, las actualizaciones, el registro "
+              "(si algo falla) y este recorrido, para repetirlo cuando quieras."},
 )
+
+
+# ------------------------------------------------------- niveles del buzón
+# Carpetas por nivel del buzón «Subir a Webclass» (nombre de la carpeta, código de nivel de WebClass), en orden.
+CARPETAS_NIVEL = tuple([(f"{n} basico", 20 + n) for n in range(1, 9)] + [(f"{n} medio", 30 + n) for n in range(1, 5)])
+_PALABRAS_CON_TILDE = {"basico": "Básico", "orientacion": "Orientación", "matematica": "Matemática",
+                       "tecnologia": "Tecnología", "religion": "Religión", "musica": "Música", "ingles": "Inglés",
+                       "educacion": "Educación", "fisica": "Física", "quimica": "Química", "biologia": "Biología",
+                       "filosofia": "Filosofía", "psicologia": "Psicología", "geografia": "Geografía",
+                       "comunicacion": "Comunicación", "integracion": "Integración"}
+
+
+def nombre_de_nivel(carpeta: str) -> str:
+    """Cómo se muestra una carpeta del buzón: '5 basico' -> '5° Básico', '1 medio' -> '1° Medio',
+    '5 basico Orientacion' -> '5° Básico · Orientación'. Las carpetas no se renombran: solo se muestran así."""
+    m = re.fullmatch(r"\s*(\d)\s+(basico|medio)\b(.*)", carpeta or "", re.IGNORECASE)
+    if not m:
+        return carpeta
+    base = f"{m.group(1)}° {'Básico' if m.group(2).lower() == 'basico' else 'Medio'}"
+    resto = " ".join(_PALABRAS_CON_TILDE.get(p.lower(), p[:1].upper() + p[1:]) for p in m.group(3).split())
+    return f"{base} · {resto}" if resto else base
+
+
+def nivel_de_carpeta(carpeta: str) -> int | None:
+    """Código de nivel de WebClass de una carpeta del buzón (25 para «5 basico» y «5 basico Orientacion»)."""
+    m = re.match(r"\s*(\d)\s+(basico|medio)\b", carpeta or "", re.IGNORECASE)
+    if not m:
+        return None
+    return (20 if m.group(2).lower() == "basico" else 30) + int(m.group(1))
+
+
+def niveles_del_docente(perfil: dict) -> set[int]:
+    """Códigos de nivel de los cursos del docente: de `curso_niveles` o, si el perfil no lo trae, del nombre del
+    curso («5BA» -> 25, «1MA» -> 31)."""
+    niveles = {int(v) for v in (perfil.get("curso_niveles") or {}).values() if str(v).isdigit()}
+    if niveles:
+        return niveles
+    cursos = list(perfil.get("curso_ids") or {}) + [u.get("curso", "") for u in perfil.get("unidades") or []]
+    for curso in cursos:
+        m = re.match(r"\s*(\d)\s*([BM])", str(curso), re.IGNORECASE)
+        if m:
+            niveles.add((20 if m.group(2).upper() == "B" else 30) + int(m.group(1)))
+    return niveles
+
+
+def ordenar_carpetas(carpetas: list[str], propios: set[int]) -> tuple[list[str], list[str]]:
+    """(las del docente, las demás), cada una en orden de nivel (1° a 8° Básico, 1° a 4° Medio) y con las carpetas
+    especiales («5 basico Orientacion») justo después de su nivel."""
+    def orden(carpeta: str) -> tuple:
+        nivel = nivel_de_carpeta(carpeta)
+        return (nivel is None, nivel or 0, carpeta.lower())
+    ordenadas = sorted(carpetas, key=orden)
+    return ([c for c in ordenadas if nivel_de_carpeta(c) in propios],
+            [c for c in ordenadas if nivel_de_carpeta(c) not in propios])
 
 
 def tour_pendiente(ruta: str, version: int = TOUR_VERSION) -> bool:
@@ -544,11 +959,19 @@ def parsear_item(linea: str) -> dict | None:
         return None
     opciones = [{"id": str(o["id"]), "texto": str(o.get("texto") or o["id"])}
                 for o in dato.get("opciones") or [] if isinstance(o, dict) and o.get("id")]
-    return {"clave": str(dato["clave"]), "estado": dato["estado"],
-            "titulo": str(dato.get("titulo") or dato["clave"]),
-            "grupo": str(dato.get("grupo") or ""), "que": str(dato.get("que") or ""),
-            "detalle": str(dato.get("detalle") or ""), "motivo": str(dato.get("motivo") or ""),
-            "opciones": opciones}
+    salida = {"clave": str(dato["clave"]), "estado": dato["estado"],
+              "titulo": str(dato.get("titulo") or dato["clave"]),
+              "grupo": str(dato.get("grupo") or ""), "que": str(dato.get("que") or ""),
+              "detalle": str(dato.get("detalle") or ""), "motivo": str(dato.get("motivo") or ""),
+              "opciones": opciones}
+    # Con qué marcar el ítem «no hubo clase»: un bloque del libro (clave con fecha) o una clase (su id), y su día.
+    sin_clase = dato.get("sin_clase")
+    if (isinstance(sin_clase, dict) and sin_clase.get("campo") in ("bloques", "clases") and sin_clase.get("clave")):
+        dia = fecha_iso(sin_clase.get("dia"))
+        salida["sin_clase"] = {"campo": sin_clase["campo"], "clave": str(sin_clase["clave"]),
+                               "dia": dia.isoformat() if dia else "",
+                               "titulo": str(sin_clase.get("titulo") or salida["titulo"])[:80]}
+    return salida
 
 
 def agrupar_items(items: list[dict]) -> dict[str, list[dict]]:
@@ -1004,6 +1427,188 @@ def texto_atrasados(atrasados: list[dict]) -> str:
             f"({dias}{mas})")
 
 
+# ------------------------------------------------------------ días sin clases
+# Feriados, salidas, vacaciones: lo que el docente marca como «no hubo clases» deja de aparecer como pendiente
+# en la tarjeta «Hoy», en «Registrar libro» (y el pendiente) y en «Asignar clases». Un archivo por cuenta
+# (rutas.sin_clases):
+#   {"dias": {"2026-10-12": "Feriado"}, "bloques": {"5BA|08:00-09:30|123|2026-10-09": "5BA 08:00"},
+#    "clases": {"98765": "5BA · Clase 3"}}
+# Un bloque lleva su fecha al final de la clave (la misma de la casilla en la vista previa de varios días).
+DIAS_CORTOS = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
+MAX_DIAS_SIN_CLASES = 120       # unas vacaciones caben de sobra; un año entero por error de tipeo, no
+
+
+def fecha_iso(texto) -> datetime.date | None:
+    """'2026-10-12' -> date (None si no es una fecha así)."""
+    try:
+        return datetime.date.fromisoformat(str(texto or "")[:10])
+    except ValueError:
+        return None
+
+
+def fecha_de_estado(texto) -> datetime.date | None:
+    """'12/10/2026' (como vienen las fechas del estado del libro) -> date, o None."""
+    try:
+        return datetime.datetime.strptime(str(texto or "").strip()[:10], "%d/%m/%Y").date()
+    except ValueError:
+        return None
+
+
+def leer_sin_clases(ruta: str) -> dict:
+    """Lo marcado como «no hubo clases»: siempre con las tres listas, aunque falte el archivo o venga roto."""
+    datos = leer_json(ruta)
+    salida = {}
+    for campo in ("dias", "bloques", "clases"):
+        valor = datos.get(campo)
+        salida[campo] = {str(k): str(v or "") for k, v in valor.items()} if isinstance(valor, dict) else {}
+    salida["dias"] = {k: v for k, v in salida["dias"].items() if fecha_iso(k)}
+    return salida
+
+
+def guardar_sin_clases(ruta: str, datos: dict) -> None:
+    limpio = {campo: dict(sorted((datos.get(campo) or {}).items())) for campo in ("dias", "bloques", "clases")}
+    os.makedirs(os.path.dirname(ruta) or ".", exist_ok=True)
+    escribir_atomico(ruta, json.dumps(limpio, ensure_ascii=False, indent=1))
+
+
+def marcar_dias_sin_clases(ruta: str, dias: list[datetime.date], motivo: str = "") -> list[str]:
+    """Deja esos días como «no hubo clases» (los fines de semana no hace falta). Devuelve los que agregó."""
+    datos = leer_sin_clases(ruta)
+    agregados = []
+    for dia in sorted(set(dias)):
+        if dia.weekday() >= 5:
+            continue
+        clave = dia.isoformat()
+        if clave not in datos["dias"]:
+            agregados.append(clave)
+        datos["dias"][clave] = (motivo or "").strip()[:60]
+    guardar_sin_clases(ruta, datos)
+    return agregados
+
+
+def dias_para_marcar(desde_texto: str, hasta_texto: str = "", hoy: datetime.date | None = None) -> list[datetime.date]:
+    """Los días hábiles de «desde» a «hasta» (o solo «desde»). ValueError con un mensaje claro si no sirve.
+
+    Se pueden marcar días que vienen (un feriado de la próxima semana, las vacaciones de invierno).
+    """
+    hoy = hoy or datetime.date.today()
+    desde = parsear_fecha(desde_texto, hoy)
+    hasta = parsear_fecha(hasta_texto, hoy) if (hasta_texto or "").strip() else desde
+    if hasta < desde:
+        raise ValueError("El último día no puede ser antes del primero.")
+    if (hasta - desde).days > MAX_DIAS_SIN_CLASES:
+        raise ValueError(f"Es mucho tiempo: como máximo {MAX_DIAS_SIN_CLASES} días de una vez.")
+    dias = dias_habiles(desde, hasta)
+    if not dias:
+        raise ValueError("Es fin de semana: esos días ya no se revisan.")
+    return dias
+
+
+def quitar_sin_clases(ruta: str, campo: str, claves: list[str]) -> None:
+    """Deshace lo marcado: días (ISO), bloques o clases."""
+    datos = leer_sin_clases(ruta)
+    for clave in claves:
+        datos.get(campo, {}).pop(str(clave), None)
+    guardar_sin_clases(ruta, datos)
+
+
+def ignorar_en_sin_clases(ruta: str, campo: str, clave: str, titulo: str = "") -> None:
+    """«No hubo esta clase»: un bloque del libro (clave con su fecha) o una clase de la planificación (su id)."""
+    datos = leer_sin_clases(ruta)
+    datos[campo][str(clave)] = (titulo or "").strip()[:80]
+    guardar_sin_clases(ruta, datos)
+
+
+def clave_con_fecha(clave: str, dia: datetime.date) -> str:
+    """La clave de un bloque con su fecha al final (si ya la trae, queda igual)."""
+    return clave if fecha_iso(clave.rsplit("|", 1)[-1]) else f"{clave}|{dia.isoformat()}"
+
+
+def dia_sin_clases(datos: dict, dia: datetime.date | None) -> bool:
+    return dia is not None and dia.isoformat() in datos.get("dias", {})
+
+
+def bloque_sin_clase(datos: dict, clave: str, dia: datetime.date) -> bool:
+    """¿Ese bloque (o su día entero) quedó marcado como «no hubo clase»?"""
+    return dia_sin_clases(datos, dia) or clave_con_fecha(clave, dia) in datos.get("bloques", {})
+
+
+def bloque_sin_clase_por_hora(datos: dict, curso: str, inicio: str, dia: datetime.date) -> bool:
+    """Lo mismo, cuando solo se sabe el curso y la hora de inicio (las filas del «Informe del mes»)."""
+    if dia_sin_clases(datos, dia):
+        return True
+    for clave in datos.get("bloques", {}):
+        partes = clave.split("|")
+        if (len(partes) >= 3 and partes[0] == curso and partes[1].startswith(f"{inicio}-")
+                and partes[-1] == dia.isoformat()):
+            return True
+    return False
+
+
+def clase_sin_tarea(datos: dict, idclase, fechaini: str) -> bool:
+    """¿Esa clase de la planificación no se hizo (marcada a mano, o su fecha es un día sin clases)?"""
+    return str(idclase) in datos.get("clases", {}) or dia_sin_clases(datos, fecha_de_estado(fechaini))
+
+
+def aplicar_sin_clases(estado: dict | None, datos: dict) -> dict | None:
+    """El estado del libro sin lo marcado como «no hubo clases».
+
+    Se aplica al mostrarlo, así lo que se marca vale al tiro, sin esperar la próxima revisión del libro.
+    """
+    if not isinstance(estado, dict) or estado.get("error"):
+        return estado
+    salida = dict(estado)
+    dia = fecha_de_estado(estado.get("fecha"))
+    if dia_sin_clases(datos, dia):
+        salida.update(sin_clases=True, bloques=[], sin_firmar=[], sin_registro=[])
+    elif dia is not None:
+        for campo in ("bloques", "sin_firmar", "sin_registro"):
+            salida[campo] = [b for b in estado.get(campo) or []
+                             if clave_con_fecha(clave_de_bloque(b), dia) not in datos.get("bloques", {})]
+    atrasados = []
+    for a in estado.get("atrasados") or []:
+        if dia_sin_clases(datos, fecha_de_estado(a.get("fecha"))):
+            continue
+        claves = a.get("claves")
+        if isinstance(claves, list):
+            quedan = [k for k in claves if k not in datos.get("bloques", {})]
+            if not quedan:
+                continue
+            a = {**a, "bloques": len(quedan), "claves": quedan, "cursos": sorted({k.split("|")[0] for k in quedan})}
+        atrasados.append(a)
+    salida["atrasados"] = atrasados
+    return salida
+
+
+def _dia_habil_siguiente(dia: datetime.date) -> datetime.date:
+    dia += datetime.timedelta(days=1)
+    while dia.weekday() >= 5:
+        dia += datetime.timedelta(days=1)
+    return dia
+
+
+def tramos_sin_clases(dias: dict) -> list[dict]:
+    """Los días marcados, juntando los seguidos con el mismo motivo (unas vacaciones son una sola fila).
+
+    [{desde, hasta, motivo, dias: [ISO…], texto}], del más reciente al más antiguo.
+    """
+    tramos: list[dict] = []
+    for dia in sorted(d for d in (fecha_iso(k) for k in dias) if d):
+        motivo = dias.get(dia.isoformat(), "")
+        ultimo = tramos[-1] if tramos else None
+        if ultimo and ultimo["motivo"] == motivo and _dia_habil_siguiente(ultimo["hasta"]) == dia:
+            ultimo["hasta"] = dia
+            ultimo["dias"].append(dia.isoformat())
+        else:
+            tramos.append({"desde": dia, "hasta": dia, "motivo": motivo, "dias": [dia.isoformat()]})
+    for t in tramos:
+        d, h = t["desde"], t["hasta"]
+        t["texto"] = (f"{DIAS_CORTOS[d.weekday()]} {d:%d/%m/%Y}" if d == h else
+                      f"{DIAS_CORTOS[d.weekday()]} {d:%d/%m} al {DIAS_CORTOS[h.weekday()]} {h:%d/%m/%Y} "
+                      f"({len(t['dias'])} días)")
+    return list(reversed(tramos))
+
+
 def problemas_de_observacion(curso: str, alumnas: list[str], tipo: int, fecha: str,
                              texto: str, asignatura: str) -> list[str]:
     """Qué falta para poder registrar una observación (vacío si está lista)."""
@@ -1059,3 +1664,141 @@ def texto_de_correo(nombres: list[str], docente: str) -> tuple[str, str]:
     lista = "\n".join(f"- {n}" for n in nombres)
     cuerpo = f"Estimado equipo PIE:\n\n{lista}\n\nSaludos cordiales,\n{docente}"
     return asunto_de_correo(nombres, cursos_en_nombres(nombres)), cuerpo.strip()
+
+
+# ------------------------------------------------------------ accesos directos de Windows
+def _texto_ps(valor: str) -> str:
+    """Texto entre comillas simples para PowerShell (las comillas simples de adentro se duplican)."""
+    return "'" + str(valor).replace("'", "''") + "'"
+
+
+def _powershell(guion: str, timeout: int = 40) -> str:
+    import subprocess
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + guion],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if r.returncode != 0:
+        raise OSError((r.stderr or r.stdout or "PowerShell no respondió").strip()[:300])
+    return r.stdout
+
+
+def _lista_json(salida: str) -> list[dict]:
+    salida = (salida or "").strip()
+    if not salida:
+        return []
+    datos = json.loads(salida)
+    return datos if isinstance(datos, list) else [datos]
+
+
+def leer_accesos() -> list[dict]:
+    """Los accesos directos (.lnk) del escritorio, del menú Inicio y de la carpeta «Inicio» de Windows:
+    [{"ruta", "carpeta" (escritorio/inicio/programas), "destino", "argumentos", "atajo"}]. Solo lee."""
+    guion = ("$s=New-Object -ComObject WScript.Shell; $r=@(); "
+             "foreach($par in @(@('escritorio',[Environment]::GetFolderPath('Desktop')),"
+             "@('inicio',[Environment]::GetFolderPath('Startup')),"
+             "@('programas',[Environment]::GetFolderPath('Programs')))){"
+             " if($par[1] -and (Test-Path -LiteralPath $par[1])){"
+             "  Get-ChildItem -LiteralPath $par[1] -Filter *.lnk | ForEach-Object {"
+             "   $a=$s.CreateShortcut($_.FullName);"
+             "   $r+=[pscustomobject]@{ruta=$_.FullName;carpeta=$par[0];destino=$a.TargetPath;"
+             "argumentos=$a.Arguments;atajo=$a.Hotkey}}}};"
+             "ConvertTo-Json -InputObject @($r) -Compress")
+    return _lista_json(_powershell(guion))
+
+
+def leer_acceso(ruta: str) -> dict:
+    """Un acceso directo: {"destino", "argumentos", "atajo"} (vacío si no existe)."""
+    if not os.path.isfile(ruta):
+        return {}
+    guion = (f"$a=(New-Object -ComObject WScript.Shell).CreateShortcut({_texto_ps(ruta)});"
+             "ConvertTo-Json -InputObject ([pscustomobject]@{destino=$a.TargetPath;argumentos=$a.Arguments;"
+             "atajo=$a.Hotkey}) -Compress")
+    datos = _lista_json(_powershell(guion))
+    return datos[0] if datos else {}
+
+
+def escribir_acceso(ruta: str, destino: str, argumentos: str, carpeta: str, atajo: str = "") -> None:
+    """Crea o rehace un acceso directo de Windows, con su atajo de teclado («CTRL+ALT+A») o sin atajo."""
+    os.makedirs(os.path.dirname(ruta), exist_ok=True)
+    _powershell("$a=(New-Object -ComObject WScript.Shell).CreateShortcut(" + _texto_ps(ruta) + "); "
+                f"$a.TargetPath={_texto_ps(destino)}; $a.Arguments={_texto_ps(argumentos)}; "
+                f"$a.WorkingDirectory={_texto_ps(carpeta)}; $a.Hotkey={_texto_ps(atajo)}; $a.Save()")
+
+
+def carpeta_especial(nombre: str) -> str:
+    """Desktop, Startup o Programs de este usuario, como las ve Windows (respeta OneDrive)."""
+    return _powershell(f"[Environment]::GetFolderPath({_texto_ps(nombre)})").strip()
+
+
+def script_de_acceso(acceso: dict) -> str:
+    """La ruta del barra_profe.pyw que abre un acceso directo ('' si no es de la barra)."""
+    m = re.search(r'"?([^"]*barra_profe\.pyw)"?', acceso.get("argumentos") or "", re.IGNORECASE)
+    return m.group(1).strip() if m else ""
+
+
+def accesos_de_la_barra(accesos: list[dict]) -> list[dict]:
+    """Los accesos que abren una barra, cada uno con su «script» y «roto» (True si ese archivo ya no existe)."""
+    salida = []
+    for acceso in accesos:
+        script = script_de_acceso(acceso)
+        if script:
+            salida.append({**acceso, "script": script, "roto": not os.path.isfile(script)})
+    return salida
+
+
+def atajo_de_letra(letra: str) -> str:
+    """'A' -> 'CTRL+ALT+A' (como lo pide Windows); '' si no hay letra (sin atajo)."""
+    letra = (letra or "").strip().upper()
+    return f"CTRL+ALT+{letra}" if re.fullmatch(r"[A-Z0-9]", letra) else ""
+
+
+def letra_del_atajo(atajo: str) -> str:
+    """'Alt+Ctrl+A' (como lo informa Windows) -> 'A'; '' si no es un atajo Ctrl+Alt+letra."""
+    partes = [p.strip().upper() for p in (atajo or "").split("+") if p.strip()]
+    if len(partes) == 3 and {"CTRL", "ALT"} <= set(partes):
+        letra = next(p for p in partes if p not in ("CTRL", "ALT"))
+        return letra if re.fullmatch(r"[A-Z0-9]", letra) else ""
+    return ""
+
+
+# ------------------------------------------------------------ respaldo de la configuración
+def exportar_configuracion(destino: str, archivos: dict[str, str], info: dict) -> list[str]:
+    """Zip con la configuración del docente: de `archivos` ({nombre en el zip: ruta en este PC}) solo los que
+    existen, más un info.json. Devuelve los nombres incluidos."""
+    import zipfile
+    incluidos = []
+    temporal = f"{destino}.tmp"
+    with zipfile.ZipFile(temporal, "w", zipfile.ZIP_DEFLATED) as z:
+        for nombre, ruta in archivos.items():
+            if ruta and os.path.isfile(ruta):
+                z.write(ruta, nombre)
+                incluidos.append(nombre)
+        z.writestr("info.json", json.dumps({**info, "archivos": incluidos}, ensure_ascii=False, indent=1))
+    os.replace(temporal, destino)
+    return incluidos
+
+
+def importar_configuracion(origen: str, archivos: dict[str, str], copia: str) -> list[str]:
+    """Restaura un respaldo: solo los nombres que están en `archivos` (lo demás del zip se ignora). Antes guarda lo
+    actual en `copia`. Lanza ValueError si el archivo no es un respaldo de Barra Profe."""
+    import zipfile
+    try:
+        zf = zipfile.ZipFile(origen)
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise ValueError("Ese archivo no es un respaldo de Barra Profe.") from exc
+    with zf:
+        presentes = zf.namelist()
+        nombres = [n for n in presentes if n in archivos]
+        if "info.json" not in presentes or not nombres:
+            raise ValueError("Ese archivo no es un respaldo de Barra Profe.")
+        os.makedirs(os.path.dirname(copia) or ".", exist_ok=True)
+        exportar_configuracion(copia, archivos, {"tipo": "copia de lo que había antes de importar"})
+        for nombre in nombres:
+            destino = archivos[nombre]
+            os.makedirs(os.path.dirname(destino), exist_ok=True)
+            temporal = f"{destino}.tmp"
+            with open(temporal, "wb") as f:
+                f.write(zf.read(nombre))
+            os.replace(temporal, destino)
+    return nombres

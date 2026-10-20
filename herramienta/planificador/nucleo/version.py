@@ -4,7 +4,8 @@ import re
 
 from nucleo import rutas
 
-BARRA_MINIMA = "2.2.0"   # versión de Barra que necesita esta versión del planificador (sube junto con las funciones que use)
+BARRA_MINIMA = "2.6.0"   # versión de Barra que necesita esta versión del planificador (sube junto con las funciones que use)
+# 2.6.0: los colores de la barra (tema.py) y la tabla única de asignaturas.
 _FORMATO = re.compile(r"\d+\.\d+\.\d+")
 
 

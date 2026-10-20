@@ -6,11 +6,6 @@ import re
 import unicodedata
 from io import BytesIO
 
-from docx import Document
-from PIL import Image
-from pptx import Presentation
-from pypdf import PdfReader
-
 from nucleo import ia
 
 _ORDINALES = ["Primeros", "Segundos", "Terceros", "Cuartos", "Quintos", "Sextos", "Séptimos", "Octavos"]
@@ -112,6 +107,11 @@ def _formas_con_imagen(formas):
 
 def extraer_material(archivos, avisos=None):
     """archivos: [(nombre, bytes)]. Devuelve (texto, imagenes) de PDF, PowerPoint y Word; los avisos se agregan a la lista."""
+    # Se cargan al leer material, no al abrir el planificador (juntas sumaban cerca de 1 segundo)
+    from docx import Document
+    from PIL import Image
+    from pptx import Presentation
+    from pypdf import PdfReader
     avisos = avisos if avisos is not None else []
     textos, crudas = [], []  # crudas: (PIL.Image, origen)
     for nombre, contenido in archivos:

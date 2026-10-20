@@ -10,6 +10,31 @@ import sys
 
 TRABAJADOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "barra_worker.py")
 MARCA = "##RESULTADO "
+_MODULOS = {}   # (ruta, fecha) -> módulo ya cargado
+
+
+def modulo_de_barra(raiz, nombre):
+    """Un módulo LIVIANO de Barra (p. ej. barra_utiles, sin red ni sesión) cargado desde su archivo, sin tocar sys.path.
+
+    Sirve para leer tablas que deben ser las mismas en las dos apps (asignaturas, colores). None si no está.
+    """
+    if not raiz:
+        return None                         # planificador suelto: no hay Barra de dónde leer
+    ruta = os.path.join(raiz, "herramienta", f"{nombre}.py")
+    try:
+        fecha = os.path.getmtime(ruta)
+    except OSError:
+        return None
+    if (ruta, fecha) not in _MODULOS:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(f"barra_{nombre}", ruta)
+        modulo = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(modulo)
+        except Exception:  # noqa: BLE001  (una Barra a medio actualizar no debe botar el planificador)
+            return None
+        _MODULOS[(ruta, fecha)] = modulo
+    return _MODULOS[(ruta, fecha)]
 
 
 def validar_ruta(ruta):

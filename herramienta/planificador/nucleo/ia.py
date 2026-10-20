@@ -4,9 +4,7 @@ import os
 import re
 import time
 
-from openai import OpenAI, Timeout
-
-from nucleo import rutas
+from nucleo import barra, rutas
 
 
 def _ruta_claves():
@@ -74,8 +72,54 @@ def _escribir_json(ruta, datos):
 
 
 def clave_guardada(nombre_secreto):
-    """Clave desde variable de entorno o data/claves.json."""
+    """La clave PROPIA del docente: variable de entorno o claves.json de su cuenta."""
     return os.environ.get(nombre_secreto) or _leer_json(_ruta_claves()).get(nombre_secreto, "")
+
+
+def _colegio():
+    """El módulo «colegio» de Barra (None si el planificador corre suelto o Barra es anterior a 2.11)."""
+    return barra.modulo_de_barra(rutas.BARRA, "colegio")
+
+
+def _ruta_colegio(modulo):
+    return os.path.join(rutas.BARRA, "datos", modulo.ARCHIVO)
+
+
+def claves_del_colegio():
+    """{GEMINI_API_KEY: …} que reparte el colegio: llegan cifradas con la barra y las abre la clave del colegio de este
+    PC. Nunca se muestran: solo se usan. {} si no hay."""
+    modulo = _colegio()
+    if modulo is None:
+        return {}
+    try:
+        return modulo.claves_ia(_ruta_colegio(modulo))
+    except Exception:  # noqa: BLE001  (un buzón roto no debe botar el planificador)
+        return {}
+
+
+def estado_colegio():
+    """'sin_buzon', 'sin_codigo', 'codigo_incorrecto' u 'ok' (para explicar por qué no llegan las claves del colegio)."""
+    modulo = _colegio()
+    if modulo is None:
+        return "sin_buzon"
+    try:
+        return modulo.estado(_ruta_colegio(modulo))
+    except Exception:  # noqa: BLE001
+        return "sin_buzon"
+
+
+def claves_de(proveedor, del_colegio=None):
+    """[(clave, origen)] de ese proveedor: primero la propia del docente (la «extra»), después la del colegio."""
+    secreto = PROVEEDORES[proveedor]["secreto"]
+    del_colegio = claves_del_colegio() if del_colegio is None else del_colegio
+    salida = []
+    propia = clave_guardada(secreto)
+    if propia:
+        salida.append((propia, "propia"))
+    comun = del_colegio.get(secreto, "")
+    if comun and comun != propia:
+        salida.append((comun, "colegio"))
+    return salida
 
 
 def guardar_claves(claves):
@@ -98,16 +142,19 @@ def guardar_config(proveedor=None, modelo=None, respaldo=True):
 
 
 def estado_claves():
-    """{proveedor: {guardada: bool, final: '…abcd'}} sin exponer la clave completa."""
+    """{proveedor: {guardada, final: '…abcd', colegio: bool}} sin exponer ninguna clave (de la del colegio, ni el final)."""
     salida = {}
+    del_colegio = claves_del_colegio()
     for nombre, info in PROVEEDORES.items():
         clave = clave_guardada(info["secreto"])
         salida[nombre] = {"guardada": bool(clave), "final": ("…" + clave[-4:]) if clave else "", "ayuda": info["ayuda"],
-                          "vision": info["vision"]}
+                          "vision": info["vision"], "colegio": bool(del_colegio.get(info["secreto"]))}
     return salida
 
 
 def cliente(proveedor, clave, streaming=False):
+    # openai se carga recién aquí: importarla al abrir el planificador costaba casi 2 segundos
+    from openai import OpenAI, Timeout
     # Con streaming, 'read' es el máximo de silencio entre trozos: un modelo colgado se abandona a los 45 s,
     # pero una respuesta larga que sigue llegando puede tardar lo que necesite.
     espera = Timeout(45, connect=15, write=60) if streaming else 150
@@ -161,15 +208,18 @@ def modelo_para(proveedor, clave):
 
 
 def config():
-    """Configuración vigente: {proveedor, modelo, respaldo, claves}. Si no se eligió proveedor, usa el primero con clave."""
+    """Configuración vigente: {proveedor, modelo, respaldo, claves, todas}. Si no se eligió proveedor, usa el primero
+    con clave. `claves` es la primera de cada proveedor; `todas`, [(clave, origen)] (la propia y la del colegio)."""
     guardada = _leer_json(_ruta_config())
-    claves = {n: clave_guardada(i["secreto"]) for n, i in PROVEEDORES.items()}
+    del_colegio = claves_del_colegio()
+    todas = {n: claves_de(n, del_colegio) for n in PROVEEDORES}
+    claves = {n: (lista[0][0] if lista else "") for n, lista in todas.items()}
     proveedor = guardada.get("proveedor")
     if not claves.get(proveedor):
         proveedor = next((n for n in PROVEEDORES if claves[n]), None)
         guardada = {}
     return {"proveedor": proveedor, "modelo": guardada.get("modelo"), "respaldo": guardada.get("respaldo", True),
-            "claves": claves}
+            "claves": claves, "todas": todas}
 
 
 def proveedor_actual_tiene_vision():
@@ -184,31 +234,49 @@ def es_error_de_limite(error):
 
 
 def _orden_de_intento():
+    """[(proveedor, clave, origen)]: el principal con sus claves (la propia y la del colegio) y, con respaldo, los demás."""
     cfg = config()
     principal = cfg.get("proveedor")
-    claves = cfg.get("claves", {})
-    orden = [principal] if claves.get(principal) else []
+    todas = cfg.get("todas", {})
+    proveedores = [principal] if todas.get(principal) else []
     if cfg.get("respaldo", True):
-        orden += [p for p in PROVEEDORES if p != principal and claves.get(p)]
-    return orden
+        proveedores += [p for p in PROVEEDORES if p != principal and todas.get(p)]
+    return [(p, clave, origen) for p in proveedores for clave, origen in todas[p]]
 
 
 def hay_proveedor():
     return bool(_orden_de_intento())
 
 
+def sin_claves_explicado():
+    """Por qué no hay ninguna clave, con qué hacer (la del colegio puede faltar en este PC)."""
+    motivo = estado_colegio()
+    if motivo == "sin_codigo":
+        return ("El colegio reparte claves de IA, pero falta la clave del colegio en este PC: pégala en la barra "
+                "(⚙ Ajustes → Profesor → «Clave del colegio») o agrega una tuya en «Claves de IA».")
+    if motivo == "codigo_incorrecto":
+        return ("La clave del colegio de este PC no abre las claves de IA del colegio: revísala en la barra "
+                "(⚙ Ajustes → Profesor → «Clave del colegio») o agrega una tuya en «Claves de IA».")
+    return "No hay ninguna clave de IA configurada: agrégala en «Claves de IA»."
+
+
 # Modelos que fallaron hace poco: no se reintentan hasta que pase este tiempo (segundos)
 _BLOQUEO_POR_CODIGO = {503: 120, 429: 600, 404: 86400, 400: 86400}
-_bloqueados = {}  # (proveedor, modelo) -> instante hasta el que no se intenta
+_bloqueados = {}  # (proveedor, huella de la clave, modelo) -> instante hasta el que no se intenta
 
 
-def _bloquear(proveedor, modelo, error):
+def _huella(clave):
+    """Distingue las claves de un mismo proveedor (el límite es de cada clave) sin guardar la clave entera."""
+    return (clave or "")[-6:]
+
+
+def _bloquear(proveedor, modelo, error, clave=""):
     codigo = getattr(error, "status_code", None)
     if codigo is None and "timed out" in str(error).lower():
         codigo = 503  # sin respuesta en el tiempo de espera: se trata como saturado
     segundos = _BLOQUEO_POR_CODIGO.get(codigo)
     if segundos:
-        _bloqueados[(proveedor, modelo)] = time.time() + segundos
+        _bloqueados[(proveedor, _huella(clave), modelo)] = time.time() + segundos
 
 
 def _prioridad_respaldo(modelo):
@@ -238,7 +306,7 @@ def _modelos_a_probar(proveedor, clave):
     otros = sorted((m for m in disponibles if m != primero and _prioridad_respaldo(m) < 9),
                    key=lambda m: (_prioridad_respaldo(m), disponibles.index(m)))
     ahora = time.time()
-    lista = [m for m in [primero] + otros if _bloqueados.get((proveedor, m), 0) <= ahora]
+    lista = [m for m in [primero] + otros if _bloqueados.get((proveedor, _huella(clave), m), 0) <= ahora]
     return lista[:8] or [primero]
 
 
@@ -257,18 +325,31 @@ def _motivo(error):
     return f"falló ({str(error)[:100]})"
 
 
-def completar(construir_mensajes, max_tokens, temperature=0.2, json=False, razonamiento_bajo=False):
+def _avisar(funcion, *argumentos):
+    """Avisa el avance a quien lo pidió; si ese aviso falla, la respuesta de la IA sigue igual."""
+    if funcion:
+        try:
+            funcion(*argumentos)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def completar(construir_mensajes, max_tokens, temperature=0.2, json=False, razonamiento_bajo=False,
+              al_intento=None, al_trozo=None):
     """
-    Llama al proveedor principal y, si llega a su límite (o falla), al siguiente con clave.
+    Llama al proveedor principal y, si llega a su límite (o falla), a la siguiente clave: la del colegio del mismo
+    proveedor (si el docente agregó una propia, esa va primero) y después los demás proveedores.
     construir_mensajes(info_proveedor) -> lista de mensajes (permite ajustar el material y las imágenes a cada proveedor).
+    al_intento("Proveedor · modelo") avisa cada intento (lo escrito por un intento fallido se descarta) y al_trozo(texto),
+    cada trozo de la respuesta a medida que llega: así la pantalla muestra el texto mientras se escribe.
     Devuelve (texto, proveedor_usado, finish_reason, avisos).
     """
-    cfg = config()
     avisos, ultimo_error = [], None
-    for proveedor in _orden_de_intento():
+    for proveedor, clave, origen in _orden_de_intento():
         info = PROVEEDORES[proveedor]
-        clave = cfg["claves"][proveedor]
+        de_quien = " (clave del colegio)" if origen == "colegio" else ""
         for modelo in _modelos_a_probar(proveedor, clave):
+            _avisar(al_intento, f"{proveedor} · {modelo}")
             extra = {}
             if json:
                 extra["response_format"] = {"type": "json_object"}
@@ -289,11 +370,13 @@ def completar(construir_mensajes, max_tokens, temperature=0.2, json=False, razon
                         if trozo.choices:
                             if trozo.choices[0].delta and trozo.choices[0].delta.content:
                                 partes.append(trozo.choices[0].delta.content)
+                                _avisar(al_trozo, partes[-1])
                             fin = trozo.choices[0].finish_reason or fin
                     texto = "".join(partes)
                 else:
                     res = crear(**argumentos)
                     texto, fin = res.choices[0].message.content or "", res.choices[0].finish_reason
+                    _avisar(al_trozo, texto)
                 if not texto.strip():
                     raise RuntimeError("respuesta vacía")
                 return texto, f"{proveedor} · {modelo}", fin, avisos
@@ -305,12 +388,12 @@ def completar(construir_mensajes, max_tokens, temperature=0.2, json=False, razon
                     generado = (cuerpo.get("error") or cuerpo).get("failed_generation")
                     if generado:
                         return generado, f"{proveedor} · {modelo}", "stop", avisos
-                _bloquear(proveedor, modelo, e)
-                avisos.append(f"{proveedor} · {modelo} {_motivo(e)}; se intentó con otra opción.")
+                _bloquear(proveedor, modelo, e, clave)
+                avisos.append(f"{proveedor} · {modelo}{de_quien} {_motivo(e)}; se intentó con otra opción.")
                 if getattr(e, "status_code", None) in (401, 403):
-                    break  # clave inválida: no sirve probar otros modelos de este proveedor
+                    break  # clave inválida: no sirve probar otros modelos con esta clave
     if ultimo_error is None:
-        raise RuntimeError("No hay ninguna clave de IA configurada: agrégala en «Claves de IA».")
+        raise RuntimeError(sin_claves_explicado())
     if es_error_de_limite(ultimo_error):
         raise RuntimeError("Todos los proveedores configurados llegaron a su límite. Espera un minuto (o hasta mañana "
                            "si es el límite diario) o agrega otra clave en «Claves de IA».") from ultimo_error

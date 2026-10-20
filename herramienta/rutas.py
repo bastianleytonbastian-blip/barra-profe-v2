@@ -109,6 +109,14 @@ def registro(base: str, perfil: str) -> str:
     return os.path.join(DATOS, f"{base}_{perfil}.csv")
 
 
+def sin_clases(perfil: str) -> str:
+    """Días (y bloques o clases) que ese docente marcó como «no hubo clases»: datos\\sin_clases_<perfil>.json.
+
+    Lo escribe la barra y lo leen el libro, las tareas y la revisión del libro para no darlos por pendientes.
+    """
+    return os.path.join(DATOS, f"sin_clases_{perfil}.json" if perfil else "sin_clases.json")
+
+
 def perfil_activo(por_defecto: str = "") -> str:
     """El perfil elegido en este PC, o el que se pase por defecto."""
     try:

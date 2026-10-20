@@ -38,16 +38,20 @@ ITEMS: list[dict] = []
 
 
 def item(clave: str, estado: str, titulo: str, grupo: str = "", que: str = "",
-         detalle: str = "", motivo: str = "", opciones: list[dict] | None = None) -> None:
+         detalle: str = "", motivo: str = "", opciones: list[dict] | None = None,
+         sin_clase: dict | None = None) -> None:
     """Informa un ítem. estado: propuesto | hecho | ya | pendiente | error | omitido.
 
     `opciones` ([{"id", "texto"}]) son las clases entre las que el docente puede
-    elegir cuando la herramienta no pudo decidir sola.
+    elegir cuando la herramienta no pudo decidir sola. `sin_clase` ({campo, clave,
+    dia, titulo}) deja marcarlo «no hubo clase» desde la vista previa de la barra.
     """
     dato = {"clave": str(clave), "estado": estado, "titulo": titulo, "grupo": grupo,
             "que": que, "detalle": detalle, "motivo": motivo}
     if opciones:
         dato["opciones"] = opciones
+    if sin_clase:
+        dato["sin_clase"] = sin_clase
     ITEMS.append(dato)
     if sys.stdout:                  # con pythonw no hay consola
         print("##ITEM " + json.dumps(dato, ensure_ascii=False), flush=True)
@@ -942,6 +946,8 @@ def main() -> None:
 
     registro = archivo_registro(perfil_nombre)
     elegidos = destinos_elegidos()
+    import barra_utiles as bu
+    sin_clases = bu.leer_sin_clases(rutas.sin_clases(perfil_nombre))
 
     # Unidades que el perfil no conoce. En la vista previa se muestran todas con casilla;
     # en la corrida real solo entran las marcadas (y se guardan en el perfil). Sin vista
@@ -1009,7 +1015,13 @@ def main() -> None:
         pendientes = [c for c in clases if c["asignados"] == 0]
         if fechas_filtro:
             pendientes = [c for c in pendientes if c["fechaini"] in fechas_filtro]
-        print(f"  {len(clases)} clases, {len(pendientes)} pendientes de asignar.")
+        # Feriados, vacaciones…: lo que el docente marcó como «no hubo clase» no se asigna ni se vuelve a ofrecer.
+        no_hubo = [c for c in pendientes if bu.clase_sin_tarea(sin_clases, c["idclase"], c["fechaini"])]
+        for c in no_hubo:
+            print(f"  [SIN CLASES] {c['nombre']}: marcaste que no hubo esa clase ({c['fechaini'] or 'sin fecha'}).")
+        pendientes = [c for c in pendientes if c not in no_hubo]
+        print(f"  {len(clases)} clases, {len(pendientes)} pendientes de asignar."
+              + (f" ({len(no_hubo)} sin clase: no se asignan)" if no_hubo else ""))
 
         procesadas = 0
         for clase in pendientes:
@@ -1018,6 +1030,9 @@ def main() -> None:
             fechaini = clase["fechaini"]
             fechafin = clase["fechafin"]
             titulo = f"{curso} · {nombre}"
+            dia = bu.fecha_de_estado(fechaini)
+            marca = {"campo": "clases", "clave": str(idclase), "dia": dia.isoformat() if dia else "",
+                     "titulo": f"{titulo} ({fechaini})" if fechaini else titulo}
 
             if seleccion is not None and str(idclase) not in seleccion:
                 print(f"  Omitida por ti: {nombre}")
@@ -1029,7 +1044,7 @@ def main() -> None:
             if not fechaini or not fechafin:
                 print(f"  [SALTADA] {nombre}: sin fecha de inicio/término definida.")
                 item(idclase, "pendiente", titulo, curso, "asignación",
-                     motivo="sin fecha de inicio/término definida")
+                     motivo="sin fecha de inicio/término definida", sin_clase=marca)
                 resumen.append((curso, nombre, "SALTADA (sin fechas)"))
                 continue
 
@@ -1041,7 +1056,7 @@ def main() -> None:
             if not alumnas:
                 print(f"  [SALTADA] {nombre}: no se encontraron alumnas en {curso}.")
                 item(idclase, "pendiente", titulo, curso, "asignación",
-                     motivo=f"no se encontraron alumnas en {curso}")
+                     motivo=f"no se encontraron alumnas en {curso}", sin_clase=marca)
                 resumen.append((curso, nombre, "SALTADA (sin alumnas)"))
                 continue
 
@@ -1049,7 +1064,7 @@ def main() -> None:
             if args.simular:
                 print(f"  [SIMULAR] {nombre}: se asignaría a {len(alumnas)} alumnas "
                       f"({fechaini} - {fechafin}).")
-                item(idclase, "propuesto", titulo, curso, "asignación", detalle)
+                item(idclase, "propuesto", titulo, curso, "asignación", detalle, sin_clase=marca)
                 resumen.append((curso, nombre, f"se asignaría ({len(alumnas)} alumnas)"))
                 continue
 

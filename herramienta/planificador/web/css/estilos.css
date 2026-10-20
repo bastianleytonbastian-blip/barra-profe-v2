@@ -1,4 +1,6 @@
-/* Planificador de Clases: estilos. Tokens de color arriba; el modo oscuro sigue al sistema. */
+/* Planificador de Clases: estilos. Tokens de color arriba.
+   Claro u oscuro: como el sistema, o el que se elija en Mi perfil (data-tema en <html>). El color principal puede ser el
+   de la barra de la cuenta (--marca-*, lo pone tema.js con los colores de tema.py de Barra). */
 :root {
   --fondo: #f4f6f9;
   --superficie: #ffffff;
@@ -6,13 +8,14 @@
   --borde: #d9e0ea;
   --texto: #1c2733;
   --texto-suave: #5b6878;
-  --primario: #1f3b57;
-  --primario-hover: #17304a;
-  --sobre-primario: #ffffff;
+  --primario: var(--marca-claro, #1f3b57);
+  --primario-hover: color-mix(in srgb, var(--primario) 84%, #000);
+  --sobre-primario: var(--marca-sobre-claro, #ffffff);
   --acento: #1e8a7a;
   --exito: #2e7d32;
   --aviso: #b26a00;
   --peligro: #c62828;
+  --sobre-estado: #ffffff;
   --foco: #3b82c4;
   --sombra: 0 1px 2px rgba(20, 35, 55, .06), 0 4px 14px rgba(20, 35, 55, .06);
   --radio: 10px;
@@ -21,13 +24,23 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-tema="claro"]) {
     --fondo: #12171d; --superficie: #1a2129; --superficie-2: #212b36; --borde: #2f3b48;
-    --texto: #e6ebf1; --texto-suave: #9aa8b8; --primario: #5b9bd5; --primario-hover: #74aee0;
-    --sobre-primario: #0c1219; --acento: #4fc3ad; --exito: #66bb6a; --aviso: #f0b04a; --peligro: #ef7a7a;
+    --texto: #e6ebf1; --texto-suave: #9aa8b8; --primario: var(--marca-oscuro, #5b9bd5);
+    --primario-hover: color-mix(in srgb, var(--primario) 84%, #fff); --sobre-primario: var(--marca-sobre-oscuro, #0c1219);
+    --acento: #4fc3ad; --exito: #66bb6a; --aviso: #f0b04a; --peligro: #ef7a7a; --sobre-estado: #0c1219;
     --foco: #7db7e6; --sombra: 0 1px 2px rgba(0,0,0,.4);
   }
 }
+:root[data-tema="oscuro"] {
+  --fondo: #12171d; --superficie: #1a2129; --superficie-2: #212b36; --borde: #2f3b48;
+  --texto: #e6ebf1; --texto-suave: #9aa8b8; --primario: var(--marca-oscuro, #5b9bd5);
+  --primario-hover: color-mix(in srgb, var(--primario) 84%, #fff); --sobre-primario: var(--marca-sobre-oscuro, #0c1219);
+  --acento: #4fc3ad; --exito: #66bb6a; --aviso: #f0b04a; --peligro: #ef7a7a; --sobre-estado: #0c1219;
+  --foco: #7db7e6; --sombra: 0 1px 2px rgba(0,0,0,.4);
+}
 * { box-sizing: border-box; }
 html { color-scheme: light dark; }
+:root[data-tema="claro"] { color-scheme: light; }
+:root[data-tema="oscuro"] { color-scheme: dark; }
 body {
   margin: 0; background: var(--fondo); color: var(--texto);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -123,9 +136,10 @@ details.plegable[open] > summary { padding-bottom: 14px; }
 .btn.primario { background: var(--primario); border-color: var(--primario); color: var(--sobre-primario); }
 .btn.primario:hover:not(:disabled) { background: var(--primario-hover); }
 .btn.grande { padding: 12px 22px; font-size: 1rem; }
-.btn.exito { background: var(--exito); border-color: var(--exito); color: #fff; }
+.btn.exito { background: var(--exito); border-color: var(--exito); color: var(--sobre-estado); }
 .btn.chico { padding: 5px 11px; font-size: .85rem; }
 .btn.peligro { color: var(--peligro); }
+.btn.peligro-lleno { background: var(--peligro); border-color: var(--peligro); color: var(--sobre-estado); }
 .barra { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .espaciada { margin-top: 18px; }
 
@@ -145,7 +159,7 @@ details.plegable[open] > summary { padding-bottom: 14px; }
 .nota.error { border-color: var(--peligro); background: color-mix(in srgb, var(--peligro) 9%, var(--superficie)); }
 .nota.ok { border-color: var(--exito); background: color-mix(in srgb, var(--exito) 9%, var(--superficie)); }
 .avisos { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; max-width: min(420px, calc(100vw - 32px)); }
-.toast { padding: 12px 16px; border-radius: 8px; color: #fff; font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,.25); background: var(--exito); }
+.toast { padding: 12px 16px; border-radius: 8px; color: var(--sobre-estado); font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,.25); background: var(--exito); }
 .toast.error { background: var(--peligro); }
 .cargando { display: flex; align-items: center; gap: 12px; padding: 16px; }
 .rueda { width: 20px; height: 20px; border-radius: 50%; border: 3px solid var(--borde); border-top-color: var(--primario); animation: gira .8s linear infinite; flex: none; }
@@ -172,6 +186,10 @@ details.plegable[open] > summary { padding-bottom: 14px; }
 .codigo { font: .78rem/1.4 ui-monospace, Consolas, monospace; background: var(--superficie-2); padding: 10px; border-radius: 8px; width: 100%; height: 90px; resize: vertical; }
 .fila-editable { display: grid; gap: 8px; grid-template-columns: 1.3fr 1fr 80px 2fr auto; align-items: center; margin-bottom: 8px; }
 .fila-editable.dos { grid-template-columns: 2fr 1fr auto; }
+.fila-editable.plantilla { grid-template-columns: 1fr 2.4fr auto; align-items: start; }
+.fila-editable.plantilla textarea { min-height: 64px; }
+.solo-lectura { padding: 9px 11px; border: 1px dashed var(--borde); border-radius: 8px; background: var(--superficie-2); }
+.muestra { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: -2px; margin-left: 4px; border: 1px solid var(--borde); }
 
 /* ── Diálogo de IA ── */
 .dialogo { border: 0; padding: 0; border-radius: 14px; width: min(560px, calc(100vw - 24px)); background: var(--superficie); color: var(--texto); box-shadow: 0 20px 60px rgba(0,0,0,.35); }
@@ -186,12 +204,12 @@ details.plegable[open] > summary { padding-bottom: 14px; }
   .menu a { padding: 8px 10px; font-size: .9rem; }
   .estado-ia { margin-top: 0; width: auto; margin-left: auto; }
   .rejilla, .rejilla.tres, .dua-rejilla { grid-template-columns: 1fr; }
-  .fila-editable, .fila-editable.dos { grid-template-columns: 1fr; }
+  .fila-editable, .fila-editable.dos, .fila-editable.plantilla { grid-template-columns: 1fr; }
 }
 @media print { .lateral, .avisos { display: none; } .app { display: block; } }
 
 /* ── Pestaña «WebClass»: resumen, acordeones, chips y revisión ── */
-.segmentado { display: inline-flex; border: 1px solid var(--borde); border-radius: 8px; overflow: hidden; }
+.segmentado { display: inline-flex; border: 1px solid var(--borde); border-radius: 8px; overflow: hidden; align-self: flex-start; max-width: 100%; flex-wrap: wrap; }
 .segmentado label { padding: 8px 16px; cursor: pointer; font-weight: 600; font-size: .9rem; background: var(--superficie); }
 .segmentado input { position: absolute; opacity: 0; pointer-events: none; }
 .segmentado label:has(input:checked) { background: var(--primario); color: var(--sobre-primario); }
@@ -218,3 +236,75 @@ details.plegable[open] > summary { padding-bottom: 14px; }
 .fila-replica { display: grid; grid-template-columns: 90px 1fr 160px; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--borde); }
 .resumen-envio ul { margin: 6px 0; padding-left: 18px; }
 @media (max-width: 860px) { .fila-recurso, .fila-replica { grid-template-columns: 1fr; } }
+
+/* ── Aviso de servidor cerrado ── */
+.banner-caido {
+  position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 60; width: max-content; max-width: calc(100vw - 32px);
+  display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: center; padding: 10px 16px;
+  background: color-mix(in srgb, var(--peligro) 14%, var(--superficie)); border: 2px solid var(--peligro); border-radius: var(--radio);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+}
+
+/* ── Generar: barra fija abajo mientras se completa el formulario ── */
+.accion-fija {
+  position: sticky; bottom: 0; z-index: 20; margin: 0 -6px 18px; padding: 12px 16px; display: flex; flex-wrap: wrap;
+  align-items: center; gap: 10px 16px; background: var(--superficie); border: 1px solid var(--borde); border-radius: var(--radio);
+  box-shadow: 0 -6px 18px rgba(20, 35, 55, .10);
+}
+.accion-fija .ayuda { flex: 1; min-width: 180px; }
+kbd { font: .78rem ui-monospace, Consolas, monospace; padding: 1px 6px; border: 1px solid var(--borde); border-bottom-width: 2px; border-radius: 5px; background: var(--superficie-2); }
+.fila-plantilla { display: flex; gap: 8px 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.fila-plantilla .ayuda { flex: 1; min-width: 240px; }
+select.plantilla { width: auto; align-self: flex-start; min-width: 260px; max-width: 100%; }
+optgroup { font-style: normal; font-weight: 700; }
+
+/* ── Generando: etapas y texto en vivo ── */
+.en-vivo .etapas { list-style: none; display: flex; flex-wrap: wrap; gap: 6px 20px; padding: 0; margin: 12px 0 6px; }
+.en-vivo .etapas li { color: var(--texto-suave); font-weight: 600; font-size: .9rem; }
+.en-vivo .etapas li::before { content: "○ "; }
+.en-vivo .etapas li.actual { color: var(--texto); }
+.en-vivo .etapas li.actual::before { content: "● "; color: var(--primario); }
+.en-vivo .etapas li.hecha::before { content: "✓ "; color: var(--exito); }
+@media (prefers-reduced-motion: no-preference) { .en-vivo .etapas li.actual::before { animation: latido 1.2s ease-in-out infinite; } }
+@keyframes latido { 50% { opacity: .3; } }
+.texto-vivo { max-height: 420px; overflow: auto; margin-top: 10px; padding: 12px 16px; border: 1px solid var(--borde); border-radius: 8px; background: var(--superficie-2); }
+.texto-vivo h3 { font-size: .95rem; margin: 12px 0 4px; color: var(--primario); }
+.texto-vivo h3:first-child { margin-top: 0; }
+.texto-vivo p { white-space: pre-wrap; margin: 0; font-size: .92rem; }
+
+/* ── Enviar a WebClass en 3 pasos ── */
+.pasos-envio { display: flex; gap: 6px; list-style: none; padding: 0; margin: 4px 0 16px; counter-reset: paso; flex-wrap: wrap; }
+.pasos-envio li { flex: 1; min-width: 150px; }
+.pasos-envio button {
+  width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--borde); border-radius: 8px;
+  background: var(--superficie); color: var(--texto-suave); font: inherit; font-weight: 600; font-size: .88rem; cursor: pointer; text-align: left;
+}
+.pasos-envio button::before {
+  counter-increment: paso; content: counter(paso); display: inline-grid; place-items: center; width: 22px; height: 22px; flex: none;
+  border-radius: 50%; background: var(--superficie-2); color: var(--texto); font-size: .8rem;
+}
+.pasos-envio button:disabled { cursor: default; opacity: .6; }
+.pasos-envio button[aria-current="step"] { border-color: var(--primario); color: var(--texto); }
+.pasos-envio button[aria-current="step"]::before { background: var(--primario); color: var(--sobre-primario); }
+.pasos-envio button.hecho::before { content: "✓"; background: color-mix(in srgb, var(--exito) 25%, var(--superficie)); }
+
+/* ── Historial ── */
+.filtros { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+.filtros input[type="search"] { flex: 1; min-width: 220px; width: auto; }
+.filtros select { width: auto; }
+.item-historial { padding: 14px 0; border-bottom: 1px solid var(--borde); display: grid; gap: 8px; }
+.item-historial:last-child { border-bottom: 0; }
+.item-historial .titulo { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+.item-historial small { color: var(--texto-suave); }
+.enlaces-wc { display: flex; flex-wrap: wrap; gap: 6px; }
+.etiqueta-wc { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border: 1px solid var(--borde); border-radius: 999px; font-size: .82rem; background: var(--superficie-2); }
+.etiqueta-wc .estado { font-weight: 700; }
+.etiqueta-wc .estado.si { color: var(--exito); }
+.etiqueta-wc .estado.no { color: var(--peligro); }
+
+/* ── Guía PIE: editar los textos ── */
+.editor-guia { display: grid; gap: 12px; }
+.editor-guia fieldset { border: 1px solid var(--borde); border-radius: 8px; padding: 10px 14px 14px; margin: 0; display: grid; gap: 8px; }
+.editor-guia legend { font-weight: 650; padding: 0 6px; }
+.editor-guia label { display: grid; grid-template-columns: minmax(150px, 220px) 1fr; gap: 10px; align-items: center; font-size: .86rem; color: var(--texto-suave); }
+@media (max-width: 860px) { .editor-guia label { grid-template-columns: 1fr; gap: 4px; } }

@@ -7,7 +7,8 @@ escritura de archivos .pyc desactivada) y llama a sus funciones.
 Entrada: un JSON por stdin {"op", "ruta_barra", ...}. Salida: una línea  ##RESULTADO {json}
 La contraseña sale del Administrador de credenciales de Windows, igual que en Barra; si no está, avisa en vez de pedirla.
 
-Operaciones:  unidades · catalogo (solo lectura)  ·  crear (una clase en una o varias unidades, con recursos adjuntos)
+Operaciones:  unidades · catalogo · comprobar (solo lectura)  ·  crear (una clase en una o varias unidades, con recursos
+adjuntos)  ·  subir (un archivo al banco de recursos)  ·  eliminar (clases que creó el planificador)
 """
 import difflib
 import json
@@ -21,10 +22,6 @@ sys.dont_write_bytecode = True
 PASO = {"actual": "iniciar"}
 TIEMPOS = []   # [(paso, segundos, reintentos)] para saber dónde se va el tiempo
 MOMENTOS = {"inicio": 1, "desarrollo": 2, "cierre": 3}
-# Palabra del nombre de la asignatura (sin tildes) -> clave de webclass_recursos.ASIGNATURAS
-CLAVES_ASIGNATURA = {"ciencias": "ciencias", "orientacion": "orientacion", "matematica": "matematica", "lenguaje": "lenguaje",
-                     "historia": "historia", "tecnologia": "tecnologia", "quimica": "quimica", "biologia": "biologia",
-                     "fisica": "fisica"}
 
 
 class ErrorDePaso(Exception):
@@ -249,6 +246,31 @@ def op_eliminar(datos):
     salir({"resultados": resultados})
 
 
+def op_subir(datos):
+    """Sube un archivo al banco de recursos (o reutiliza uno propio con el mismo nombre y autor), sin adjuntarlo a una clase.
+
+    datos: ruta, nombre, autor, niveles (claves de Barra: '5', '2M'), asignatura (id de WebClass), visible y, si se eligió,
+    tipo_file (el tipo del formulario de WebClass; si no, Barra lo deduce de la extensión).
+    """
+    import inspect
+    w, _c, _pl, rec = abrir(datos)
+    nombre, perfil = perfil_de(w, datos)
+    niveles = [rec.NIVELES[n] for n in datos.get("niveles") or [] if n in rec.NIVELES]
+    if not niveles:
+        salir({"error": "Elige al menos un nivel."})
+    extra = {}
+    if str(datos.get("tipo_file") or "").isdigit() and "tipo_file" in inspect.signature(rec.subir_o_reutilizar).parameters:
+        extra["tipo_file"] = int(datos["tipo_file"])
+    s = iniciar_sesion(w, nombre, perfil)
+    PASO["actual"] = f"subir «{datos['nombre']}» al banco de recursos"
+    inicio = time.time()
+    id_recurso, subido = rec.subir_o_reutilizar(s, datos["ruta"], nombre=datos["nombre"], autor=datos["autor"],
+                                                niveles=niveles, asignatura=int(datos["asignatura"]),
+                                                visible=bool(datos.get("visible", True)), **extra)
+    TIEMPOS.append((PASO["actual"], round(time.time() - inicio, 1), 0))
+    salir({"id": str(id_recurso), "subido": bool(subido), "nombre": datos["nombre"]})
+
+
 def niveles_de_curso(rec, curso):
     m = re.match(r"(\d)([BM])", str(curso).upper())
     if not m:
@@ -258,11 +280,27 @@ def niveles_de_curso(rec, curso):
 
 
 def id_asignatura(rec, nombre_asignatura):
+    """Código de WebClass de la asignatura de una unidad, según la tabla única de Barra (rec.ASIGNATURAS).
+
+    Manda la palabra que aparece primero: «Historia, Geografía y Ciencias Sociales» es Historia, no Ciencias.
+    """
     t = sin_tildes(nombre_asignatura)
-    for palabra, clave in CLAVES_ASIGNATURA.items():
-        if palabra in t:
-            return rec.ASIGNATURAS[clave]
-    return None
+    halladas = [(t.index(clave), clave) for clave in rec.ASIGNATURAS if clave in t]
+    return rec.ASIGNATURAS[min(halladas)[1]] if halladas else None
+
+
+def asignatura_de_la_unidad(rec, perfil, nombre_asignatura):
+    """Código de WebClass de la asignatura de una unidad: con las asignaturas que Barra leyó del WebClass de la cuenta
+    (Música, Inglés, Religión…) y, si no las tiene o no calza, con la tabla única. None si no se reconoce."""
+    if perfil.get("asignaturas_webclass"):
+        try:
+            import barra_utiles as bu
+            hallada = bu.asignatura_de_texto(nombre_asignatura, bu.asignaturas_de_la_cuenta(perfil))
+            if hallada:
+                return hallada[2]
+        except (ImportError, AttributeError):       # una Barra anterior a la lista por cuenta
+            pass
+    return id_asignatura(rec, nombre_asignatura)
 
 
 def subir_recursos(s, rec, perfil, nombre_perfil, unidad, recursos, cache):
@@ -272,7 +310,7 @@ def subir_recursos(s, rec, perfil, nombre_perfil, unidad, recursos, cache):
     niveles = cache.get("__niveles__") or niveles_de_curso(rec, unidad["curso"])
     # WebClass exige una asignatura en el formulario de subida. Barra la rellena sola con la que más dicta el docente
     # (o Ciencias si no la conoce); aquí se usa la de la unidad y, si no se reconoce, esa misma regla. Nunca bloquea.
-    asignatura = id_asignatura(rec, unidad.get("asignatura", ""))
+    asignatura = asignatura_de_la_unidad(rec, perfil, unidad.get("asignatura", ""))
     if asignatura is None:
         import subir_carpeta as sc
         asignatura = sc.asignatura_principal(perfil)
@@ -426,7 +464,8 @@ def main():
     except Exception:
         pass
     datos = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-    ops = {"unidades": op_unidades, "catalogo": op_catalogo, "crear": op_crear, "comprobar": op_comprobar, "eliminar": op_eliminar}
+    ops = {"unidades": op_unidades, "catalogo": op_catalogo, "crear": op_crear, "comprobar": op_comprobar, "eliminar": op_eliminar,
+           "subir": op_subir}
     try:
         ops[datos["op"]](datos)
     except SystemExit:

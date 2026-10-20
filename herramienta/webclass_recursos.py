@@ -23,6 +23,7 @@ import re
 import sys
 
 import webclass_tareas as w
+from barra_utiles import ID_ASIGNATURA
 
 PLANIF = f"{w.BASE}/home/planificacion"
 MULTIFILE = f"{w.BASE}/home/recursos/multifile"
@@ -39,10 +40,8 @@ SUBCATEGORIA = {".doc": 41, ".docx": 41, ".xls": 42, ".xlsx": 42,
 NIVELES = {**{str(n): 20 + n for n in range(1, 9)},
            **{f"{n}M": 30 + n for n in range(1, 5)}}
 
-# Grupo de asignatura (selectSectorLocal).
-ASIGNATURAS = {"ciencias": 3, "orientacion": 9, "matematica": 2, "lenguaje": 1,
-               "historia": 4, "tecnologia": 7, "quimica": 14, "biologia": 12,
-               "fisica": 13}
+# Grupo de asignatura (selectSectorLocal): sale de la tabla única de barra_utiles, que también usa el planificador.
+ASIGNATURAS = dict(ID_ASIGNATURA)
 
 MOMENTOS = {"inicio": 1, "desarrollo": 2, "cierre": 3}
 
@@ -136,8 +135,31 @@ def buscar_propio(session, nombre: str, autor: str) -> str | None:
     return max(iguales, key=lambda r: int(r["id"]))["id"] if iguales else None
 
 
+def asignaturas_del_formulario(pagina: str) -> list[dict]:
+    """[{'id': 3, 'nombre': 'Ciencias Naturales'}, …] del selector «Asignatura» (selectSectorLocal) del formulario
+    de subida de WebClass. [] si la página no lo trae."""
+    m = re.search(r"<select\b[^>]*\b(?:id|name)\s*=\s*[\"']?selectSectorLocal\b[^>]*>(.*?)</select>", pagina or "", re.S | re.I)
+    if not m:
+        return []
+    salida, vistos = [], set()
+    for valor, texto in re.findall(r"<option\b[^>]*?\bvalue\s*=\s*[\"']?([^\"'\s>]*)[\"']?[^>]*>(.*?)</option>",
+                                   m.group(1), re.S | re.I):
+        nombre = " ".join(html.unescape(re.sub(r"<[^>]+>", "", texto)).split())
+        if valor.isdigit() and int(valor) > 0 and nombre and int(valor) not in vistos:
+            vistos.add(int(valor))
+            salida.append({"id": int(valor), "nombre": nombre})
+    return salida
+
+
+def leer_asignaturas(session) -> list[dict]:
+    """Asignaturas que ofrece WebClass al subir un recurso. Solo lectura: abre el formulario y no envía nada."""
+    r = session.get(f"{MULTIFILE}/subidaArchivo.php", params={"cl": 1}, headers=w.HEADERS, timeout=120)
+    r.raise_for_status()
+    return asignaturas_del_formulario(r.text)
+
+
 def subir_o_reutilizar(session, ruta: str, *, nombre: str, autor: str, niveles: list[int],
-                       asignatura: int, visible: bool) -> tuple[str, bool]:
+                       asignatura: int, visible: bool, tipo_file: int | None = None) -> tuple[str, bool]:
     """Sube al banco salvo que ya exista uno propio con el mismo nombre.
 
     Devuelve (id_recurso, subido_ahora).
@@ -146,7 +168,7 @@ def subir_o_reutilizar(session, ruta: str, *, nombre: str, autor: str, niveles: 
     if previo:
         return previo, False
     subir_al_banco(session, ruta, nombre=nombre, autor=autor, niveles=niveles,
-                   asignatura=asignatura, visible=visible)
+                   asignatura=asignatura, visible=visible, tipo_file=tipo_file)
     nuevo = buscar_propio(session, nombre, autor)
     if not nuevo:
         raise RuntimeError("Se subió, pero no aparece en el banco para obtener su id.")
@@ -154,14 +176,15 @@ def subir_o_reutilizar(session, ruta: str, *, nombre: str, autor: str, niveles: 
 
 
 def subir_al_banco(session, ruta: str, *, nombre: str, autor: str, niveles: list[int],
-                   asignatura: int, visible: bool) -> None:
+                   asignatura: int, visible: bool, tipo_file: int | None = None) -> None:
+    """tipo_file: el tipo del formulario de WebClass (p. ej. 70 = Guía PIE); sin él, se deduce de la extensión."""
     ext = os.path.splitext(ruta)[1].lower()
     if ext not in SUBCATEGORIA:
         raise ValueError(f"Extensión {ext} no soportada (usa: {', '.join(e[1:] for e in SUBCATEGORIA)}).")
     # Abrir el formulario primero deja en la sesión el contexto que usa el servidor.
     session.get(f"{MULTIFILE}/subidaArchivo.php", params={"cl": 1},
                 headers=w.HEADERS, timeout=120)
-    datos = [("TipoFile", SUBCATEGORIA[ext]), ("nombreLocal", nombre.strip()),
+    datos = [("TipoFile", tipo_file or SUBCATEGORIA[ext]), ("nombreLocal", nombre.strip()),
              ("autorLocal", autor), ("selectSectorLocal", asignatura),
              ("CategoryDecoration", -1), ("boton", "")]
     datos += [("optionLocal[]", n) for n in niveles]

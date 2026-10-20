@@ -19,6 +19,7 @@ import os
 import sys
 import time
 
+import barra_utiles as bu
 import rutas
 import webclass_libro as L
 import webclass_tareas as w
@@ -77,33 +78,46 @@ def faltante(b: dict) -> bool:
                 and b.get("val_asistencia") and b.get("val_firma"))
 
 
-def atrasados(s, token, perfil: dict, hoy: datetime.date, dias: int = DIAS_ATRAS) -> list[dict]:
+def clave_dia(curso: str, b: dict, dia: datetime.date) -> str:
+    """La clave de un bloque de Webclass con su fecha (la de «no hubo esta clase» y la vista previa)."""
+    return bu.clave_con_fecha(L.clave_bloque(curso, f"{b['inicio']}-{b['termino']}", b.get("id_bloque_detalle")), dia)
+
+
+def atrasados(s, token, perfil: dict, hoy: datetime.date, dias: int = DIAS_ATRAS,
+              sin_clases: dict | None = None) -> list[dict]:
     """Bloques propios de los últimos días hábiles que quedaron sin registrar o sin firmar.
 
     Casi no cuesta: Webclass entrega el mes entero por curso y ya está en memoria
-    por la revisión de hoy. Devuelve [{fecha, bloques, curso_n}] del más reciente al más antiguo.
+    por la revisión de hoy. Devuelve [{fecha, bloques, cursos, claves}] del más reciente al más antiguo.
+    Los días y bloques marcados como «no hubo clases» no cuentan (ni gastan uno de los días revisados).
     """
-    resultado, dia = [], hoy
-    while len(resultado) < dias + 1 and (hoy - dia).days < dias * 3:
+    sin_clases = sin_clases or {}
+    resultado, dia, revisados = [], hoy, 0
+    while revisados < dias and (hoy - dia).days < dias * 3:
         dia -= datetime.timedelta(days=1)
-        if dia.weekday() >= 5:
+        if dia.weekday() >= 5 or bu.dia_sin_clases(sin_clases, dia):
             continue
+        revisados += 1
         por_curso = L.bloques_de_cursos(s, perfil["curso_ids"], dia, perfil["iduser"], token)
-        pendientes = [(c, b) for c, bs in por_curso.items() for b in bs if faltante(b)]
+        pendientes = [(c, clave_dia(c, b, dia)) for c, bs in por_curso.items() for b in bs if faltante(b)]
+        pendientes = [(c, k) for c, k in pendientes if k not in sin_clases.get("bloques", {})]
         resultado.append({"fecha": dia.strftime("%d/%m/%Y"), "bloques": len(pendientes),
-                          "cursos": sorted({c for c, _ in pendientes})})
-        if len([r for r in resultado]) >= dias:
-            break
+                          "cursos": sorted({c for c, _ in pendientes}), "claves": [k for _, k in pendientes]})
     return [r for r in resultado if r["bloques"]]
 
 
 def revisar(fecha: datetime.date, nombre_perfil: str = w.PERFIL_POR_DEFECTO) -> dict:
     perfil = w.PERFILES[nombre_perfil]
+    sin_clases = bu.leer_sin_clases(rutas.sin_clases(nombre_perfil))
+    hoy_sin_clases = bu.dia_sin_clases(sin_clases, fecha)
     s, token = L.sesion_libro(perfil)
     bloques = []
-    por_curso = L.bloques_de_cursos(s, perfil["curso_ids"], fecha, perfil["iduser"], token)
+    por_curso = ({} if hoy_sin_clases else
+                 L.bloques_de_cursos(s, perfil["curso_ids"], fecha, perfil["iduser"], token))
     for curso, del_curso in por_curso.items():
         for b in del_curso:
+            if clave_dia(curso, b, fecha) in sin_clases["bloques"]:
+                continue                  # el docente marcó que esa clase no se hizo
             bloques.append({
                 "curso": curso,
                 # Con el id de detalle cada bloque (y cada taller) tiene su casilla.
@@ -116,16 +130,21 @@ def revisar(fecha: datetime.date, nombre_perfil: str = w.PERFIL_POR_DEFECTO) -> 
                 "firma": bool(b["val_firma"]),
             })
     bloques.sort(key=lambda x: x["hora"])
-    return {
+    estado = {
         "fecha": fecha.strftime("%d/%m/%Y"),
         "revisado": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
         "bloques": bloques,
         "sin_firmar": [b for b in bloques if not b["firma"]],
         "sin_registro": [b for b in bloques
                          if not (b["oa"] and b["leccionario"] and b["asistencia"])],
-        "jefatura": asistencia_jefatura(s, token, fecha, perfil),
-        "atrasados": atrasados(s, token, perfil, fecha),
+        "jefatura": ({"curso": perfil["jefatura"], "estado": "hoy sin clases"}
+                     if hoy_sin_clases and perfil.get("jefatura")
+                     else asistencia_jefatura(s, token, fecha, perfil)),
+        "atrasados": atrasados(s, token, perfil, fecha, sin_clases=sin_clases),
     }
+    if hoy_sin_clases:
+        estado["sin_clases"] = True
+    return estado
 
 
 def main() -> None:

@@ -45,14 +45,63 @@ pestana la abre. Desde ahi:
   Mi horario        tu semana, curso por curso, con hora de entrada y salida
   Subir recursos    sube ahora lo que haya en la carpeta, sin esperar
   Abrir y firmar    abre el libro de clases en el navegador
+  Dias sin clases   feriados o vacaciones: lo que marques ya no sale
+                    como pendiente en el libro, en las tareas ni en HOY
+
+Arriba esta la tarjeta HOY: que clase tienes, como va tu libro y cuantos
+faltaron (un clic en HOY, en la linea del libro o en la de ausentes muestra
+el detalle). La clase de ahora sale de tu
+horario de Webclass ("Mi horario"), que la barra vuelve a leer sola cada semana.
+Los botones de "Registros" abren "Mis registros": el libro, las subidas y las
+tareas asignadas, con filtros por periodo, curso y estado (y "Abrir en Excel"). Los botones van en grupos que se
+abren con un clic; tus favoritos quedan arriba (clic derecho en un boton para
+sumarlo o quitarlo). La X pregunta si esconder la barra (sigue trabajando) o
+cerrarla.
+
+En el engranaje (Ajustes) se cambia todo sin tocar archivos:
+  Apariencia         color, tamano de letra y ancho de la barra
+  Botones            mostrar u ocultar, favoritos, ordenar, editar y agregar
+  Comportamiento     abrirla al pasar el mouse, cuanto espera para esconderse,
+                     dejar el planificador listo para que abra al tiro
+  Windows y sonido   sonido de inicio, abrirla al encender el PC, atajo de
+                     teclado (Ctrl + Alt + una letra), reparar accesos rotos
+  Profesor           cambiar de profesor, agregar otro (sin consola) y
+                     actualizar tus cursos y unidades desde Webclass
+  Respaldo           guardar o recuperar tu configuracion en un .zip
+
+EQUIPOS CON VARIOS PROFESORES: cada uno tiene un PIN de 4 numeros. La barra
+parte bloqueada y se usa escribiendo el PIN ("Soy otro profesor" cambia de
+cuenta con el PIN del otro). Si no tienes PIN o lo olvidaste, entras con tu
+contrasena de Webclass y creas uno nuevo. Al irte, la X ofrece "Bloquear y
+esconder". En un equipo de un solo profesor no se pide PIN.
+
+FERIADOS Y DIAS SIN CLASES: en la vista previa de "Registrar libro",
+"Registrar libro pendiente" y "Asignar clases", cada fila trae "No hubo clase":
+eliges si no hubo esa clase o si ese dia no hubo clases, y no vuelve a
+aparecer. Para marcar un rango (vacaciones) o deshacer algo: boton "Dias sin
+clases" (tambien en Ajustes > Profesor). Se guarda por profesor.
+
+AVISOS Y CLAVES DEL COLEGIO: quien administra la barra puede mandar mensajes
+(a todos o a algunos profes) y avisos del dia, y repartir las claves de IA del
+planificador. Llegan solos, arriba de HOY. Lo que va para todos se ve sin
+configurar nada. Para los mensajes dirigidos a ti y las claves de IA, cada PC
+necesita UNA VEZ la "clave del colegio" (te la entrega el administrador):
+Ajustes > Profesor > "Clave del colegio". En el planificador puedes agregar una
+clave de IA tuya como extra: se usa primero y, si se agota, sigue la del colegio.
+
+Administrador: en su PC (con GitHub CLI y permiso en el repositorio) aparece
+Ajustes > Administrador para crear la clave del colegio, publicar mensajes y
+avisos y cargar las claves de IA. Viaja por GitHub: lo que va para todos, sin
+cifrar (no pongas nada privado); lo dirigido y las claves, cifrado.
 
 LA FIRMA LA HACES TU, SIEMPRE. Ninguna de estas herramientas firma por ti.
 
 
 ACTUALIZAR EN LINEA (la forma mas facil)
 ----------------------------------------
-Al abrirse, la barra consulta en GitHub si hay una version nueva. Si la hay,
-aparece abajo "Hay una version nueva: X.Y.Z". Haz clic, lee que cambio y
+Al abrirse, y despues cada 6 horas, la barra consulta en GitHub si hay una
+version nueva (tambien a mano: engranaje > Actualizaciones). Si la hay, aparece
+bajo la cabecera "Hay una version nueva: X.Y.Z". Haz clic, lee que cambio y
 acepta: descarga el paquete, comprueba que llego completo, guarda una copia
 del codigo actual en  respaldo_actualizacion\  y lo instala. No toca tu perfil,
 tus datos ni tus botones. Despues cierra la barra y abrela de nuevo.
@@ -74,8 +123,8 @@ Cuando te pasen una version nueva (por pendrive o por correo):
      No pregunta nada. Deja el codigo al dia, quita los archivos que
      sobraron de la version anterior y revisa los complementos.
 
-  3. Cierra la barra con la X de arriba (Escape solo la esconde) y vuelve a
-     abrirla para que tome los cambios.
+  3. Cierra la barra (la X de arriba y luego "Cerrar la barra"; Escape solo la
+     esconde) y vuelve a abrirla para que tome los cambios.
 
 NO se tocan, nunca:
      personal\     tu perfil, tus botones, tu color
@@ -103,16 +152,20 @@ con su recurso, sus OA y sus pautas DUA.
     de IA gratuita (por ejemplo, de Google AI Studio).
   · Seguridad: el planificador solo atiende a la propia pantalla abierta desde la barra; una
     pagina web cualquiera no puede crear clases ni cambiar tus claves.
-  · "Creadas en WebClass": lista de lo que el planificador creo (datos\registro_planificaciones*.csv)
-    con "Eliminar", que borra SOLO clases que el propio planificador creo y nunca una que ya
-    tenga tarea asignada.
+  · "Historial": las clases guardadas y las que el planificador creo en WebClass
+    (datos\registro_planificaciones*.csv), con buscar, filtrar por curso, abrir, duplicar para
+    otra fecha o curso, comprobar y "Eliminar", que borra SOLO clases que el propio planificador
+    creo y nunca una que ya tenga tarea asignada.
+  · "Subir a WebClass" sube el archivo directo a tu banco de recursos con la cuenta de la barra.
+  · Mi perfil > Preferencias: claro u oscuro, el color de tu barra, con que asignatura, curso y
+    hora parte cada clase, y plantillas de indicaciones. Tu nombre es el de la cuenta de la barra.
   · Pruebas: python -B -m unittest discover -s tests   (incluye las del planificador).
 
 
 VERSIONES
 ---------
 Barra y el planificador tienen cada uno su numero de version (archivo VERSION):
-    herramienta\\VERSION                 Barra Profe     (se ve en el pie de la barra, "v2.1.0")
+    herramienta\\VERSION                 Barra Profe     (se ve en el engranaje de la barra, "Ajustes")
     herramienta\\planificador\\VERSION   Planificador    (se ve abajo a la izquierda del planificador)
 Formato MAYOR.MENOR.PARCHE. INSTALAR.bat y ACTUALIZAR.bat muestran ambos. Si el planificador
 necesita una Barra mas nueva, avisa y no escribe nada en Webclass: usa ACTUALIZAR.bat.
@@ -121,9 +174,15 @@ Cada cambio que se reparta sube el numero y agrega una linea a CAMBIOS.md (en ca
 
 SI CAMBIAN TUS CURSOS O UNIDADES
 --------------------------------
-Abre una ventana de comandos en esta carpeta y escribe:
+Engranaje (Ajustes) > Profesor > "Actualizar mis cursos y unidades". Tambien
+vuelve a leer las asignaturas que ofrece tu Webclass para subir recursos.
+Desde una ventana de comandos en esta carpeta es lo mismo que:
 
     python configurar.py --perfil <tu perfil> --solo-actualizar
+
+En el buzon "Subir a Webclass" puedes crear carpetas con nivel y asignatura
+(por ejemplo "5 basico Orientacion" o "7 basico Musica"): lo que dejes ahi se
+sube con esa asignatura.
 
 
 SI ALGO NO FUNCIONA

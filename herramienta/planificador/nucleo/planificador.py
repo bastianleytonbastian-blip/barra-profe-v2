@@ -28,9 +28,22 @@ def leer_guia_pie(nombre, contenido, avisos):
 
 
 def generar(perfil, asignatura, curso, tema, indicaciones, duracion, actividad_extra=None, link_canva="", url_video="",
-            archivos=(), guia_pie=None):
-    """archivos: [(nombre, bytes)]; guia_pie: (nombre, bytes) o None. Devuelve un dict con la planificación y avisos."""
+            archivos=(), guia_pie=None, al_avanzar=None):
+    """archivos: [(nombre, bytes)]; guia_pie: (nombre, bytes) o None. Devuelve un dict con la planificación y avisos.
+
+    al_avanzar(tipo, datos) recibe el avance para mostrarlo en vivo: ("etapa", {etapa, texto}) al empezar cada parte,
+    ("intento", {modelo}) cuando la IA empieza (o reintenta con otro modelo) y ("trozo", texto) mientras escribe.
+    """
+    def avanzar(tipo, datos):
+        if al_avanzar:
+            try:
+                al_avanzar(tipo, datos)
+            except Exception:  # noqa: BLE001  (mostrar el avance nunca debe botar la planificación)
+                pass
+
     avisos, infos = [], []
+    if archivos or url_video.strip() or guia_pie:
+        avanzar("etapa", {"etapa": "material", "texto": "Leyendo el material"})
     texto_materiales = ""
     for nombre, contenido in archivos:
         texto_materiales += extraccion.texto_archivo(nombre, contenido, avisos)
@@ -111,7 +124,10 @@ INSTRUCCIÓN VITAL:
 {regla_extra}"""
         return [{"role": "system", "content": prompt_sistema}, {"role": "user", "content": usuario}]
 
-    bruto, usado, fin, avisos_ia = ia.completar(construir_mensajes, max_tokens=8192, temperature=0.15)
+    avanzar("etapa", {"etapa": "redactando", "texto": "Redactando la clase"})
+    bruto, usado, fin, avisos_ia = ia.completar(construir_mensajes, max_tokens=8192, temperature=0.15,
+                                                al_intento=lambda modelo: avanzar("intento", {"modelo": modelo}),
+                                                al_trozo=lambda texto: avanzar("trozo", texto))
     if recorte.get("limite"):
         infos.append(f"El material es largo: {usado.split(' · ')[0]} recibió sus primeros {recorte['limite']:,} caracteres. "
                      "Si importan páginas posteriores, indícalas en las indicaciones propias.".replace(",", "."))
@@ -120,6 +136,7 @@ INSTRUCCIÓN VITAL:
     extras = {k: pp.corregir_texto(v, perfil.voz) for k, v in extras.items()}
 
     # El cierre se redacta aparte, con su propia validación (ver nucleo/cierre.py)
+    avanzar("etapa", {"etapa": "cierre", "texto": "Escribiendo el cierre"})
     cie, origen_cierre = cierre.redactar(perfil, asignatura, curso, tema, pp.objetivo_de(ini) or objetivo_manual, des,
                                          modo_cierre, fuente_cierre, pp.ultima_pagina(texto_materiales))
     if origen_cierre == "respaldo":

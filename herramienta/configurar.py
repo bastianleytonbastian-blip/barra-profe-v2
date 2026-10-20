@@ -113,8 +113,20 @@ def descubrir(s, token: str, datos: dict) -> dict:
                 cuenta[u["asignatura"]] = cuenta.get(u["asignatura"], 0) + 1
             asignaturas[nombre] = max(cuenta, key=cuenta.get)
         print(f"   {nombre}: {len(encontradas)} unidades")
-    return {"curso_ids": cursos, "unidades": unidades,
-            "curso_niveles": niveles, "curso_asignaturas": asignaturas}
+    descubierto = {"curso_ids": cursos, "unidades": unidades,
+                   "curso_niveles": niveles, "curso_asignaturas": asignaturas}
+    # Las asignaturas con que se puede firmar un recurso, tal como las ofrece el WebClass de este colegio (solo
+    # lectura). Si no se pueden leer, la barra usa su tabla de siempre: nunca impide configurar la cuenta.
+    try:
+        import webclass_recursos
+        leidas = webclass_recursos.leer_asignaturas(s)
+    except Exception as exc:  # noqa: BLE001
+        leidas = []
+        print(f"   (No pude leer las asignaturas de WebClass: {str(exc)[:120]})")
+    if leidas:
+        descubierto["asignaturas_webclass"] = leidas
+        print(f"   {len(leidas)} asignaturas para subir recursos")
+    return descubierto
 
 
 def guardar(perfil: dict, clave: str) -> str:
@@ -141,6 +153,82 @@ def jefatura(cursos: dict, args) -> str:
         print(f"   «{respuesta}» no está en la lista: se deja sin jefatura.")
         return ""
     return respuesta
+
+
+RUT_VALIDO = re.compile(r"\d{7,8}-[\dkK]")
+
+
+def preparar_cuenta(rut: str, password: str) -> dict:
+    """Entra a Webclass con ese RUT y busca los cursos y unidades. No guarda nada todavía.
+
+    Es lo que usa la ventana «Configurar mi cuenta» de la barra (sin consola). Lanza ValueError si el RUT no tiene el
+    formato esperado y RuntimeError si Webclass no deja entrar o el usuario no tiene cursos con planificación.
+    """
+    rut = (rut or "").strip()
+    if not RUT_VALIDO.fullmatch(rut):
+        raise ValueError("El RUT va con guion y dígito verificador, sin puntos (ej. 12345678-9).")
+    if not password:
+        raise ValueError("Falta la contraseña de Webclass.")
+    sesion, token, datos = entrar(rut, password)
+    descubierto = descubrir(sesion, token, datos)
+    if not descubierto["curso_ids"]:
+        raise RuntimeError("Entré, pero no encontré cursos con planificación para este usuario.")
+    return {"rut": rut, **datos, **descubierto}
+
+
+def verificar_contrasena(rut: str, password: str) -> None:
+    """¿Es la contraseña de Webclass de ese RUT? La pide la barra para crear el PIN de un profesor o cuando lo olvidó.
+
+    Primero se compara con la guardada en el Administrador de credenciales (sin internet); si no coincide, se entra a
+    Webclass y, si entra, queda guardada la nueva (se cambió en Webclass). Lanza ValueError si no es la contraseña;
+    otros errores (sin internet, Webclass caído) se propagan tal cual.
+    """
+    import hmac
+    if not password:
+        raise ValueError("Escribe tu contraseña de Webclass.")
+    guardada = keyring.get_password(w.KEYRING_SERVICE, rut)
+    if guardada is not None and hmac.compare_digest(guardada.encode("utf-8"), password.encode("utf-8")):
+        return
+    try:
+        w.login(w.crear_session(), rut, password)
+    except RuntimeError as exc:
+        if "Login fallido" in str(exc):
+            raise ValueError("Esa no es tu contraseña de Webclass.") from exc
+        raise
+    keyring.set_password(w.KEYRING_SERVICE, rut, password)
+
+
+def clave_libre(base: str, rut: str) -> str:
+    """Clave de perfil que no pise a otro docente: la misma si ese perfil ya es de este RUT; si no, base2, base3…"""
+    clave, n = base, 2
+    while True:
+        ruta = os.path.join(CARPETA_PERFILES, f"{clave}.json")
+        try:
+            with open(ruta, encoding="utf-8-sig") as f:
+                existente = json.load(f)
+        except (OSError, ValueError):
+            return clave
+        if str(existente.get("rut", "")).strip().lower() == rut.strip().lower():
+            return clave
+        clave, n = f"{base}{n}", n + 1
+
+
+def guardar_cuenta(preparada: dict, password: str, nombre: str, jefatura: str = "") -> str:
+    """Guarda la contraseña en el Administrador de credenciales de Windows y el perfil (lo que trajo
+    `preparar_cuenta`). Devuelve la clave del perfil. La contraseña nunca se escribe en un archivo."""
+    nombre = (nombre or "").strip()
+    if not nombre:
+        raise ValueError("Falta tu nombre como aparece en Webclass.")
+    clave = clave_libre(clave_archivo(nombre), preparada["rut"])
+    keyring.set_password(w.KEYRING_SERVICE, preparada["rut"], password)
+    perfil = {"nombre": nombre, "rut": preparada["rut"], "iduser": preparada["iduser"],
+              "colegio": preparada["colegio"], "rol": preparada["rol"],
+              "jefatura": jefatura if jefatura in preparada["curso_ids"] else "",
+              "actualizado": datetime.datetime.now().strftime("%d/%m/%Y %H:%M"),
+              **{k: preparada[k] for k in ("curso_ids", "unidades", "curso_niveles", "curso_asignaturas",
+                                           "asignaturas_webclass") if k in preparada}}
+    guardar(perfil, clave)
+    return clave
 
 
 def main() -> None:
@@ -186,16 +274,18 @@ def main() -> None:
         with open(os.path.join(CARPETA_PERFILES, f"{args.perfil}.json"), encoding="utf-8") as f:
             nombre = (args.nombre or json.load(f).get("nombre") or "").strip()
         if not nombre:
-            nombre = input("\\nTu nombre como aparece en Webclass (para firmar recursos): ").strip()
+            nombre = input("\nTu nombre como aparece en Webclass (para firmar recursos): ").strip()
     else:
         nombre = (args.nombre or input(
-            "\\nTu nombre como aparece en Webclass (para firmar recursos): ")).strip()
+            "\nTu nombre como aparece en Webclass (para firmar recursos): ")).strip()
     clave = clave or clave_archivo(nombre)
 
     print("\nBuscando tus cursos y unidades…")
     descubierto = descubrir(s, token, datos)
     if not descubierto["curso_ids"]:
         raise SystemExit("No encontré cursos con planificación para este usuario.")
+    if args.solo_actualizar and "asignaturas_webclass" not in descubierto and previo.get("asignaturas_webclass"):
+        descubierto["asignaturas_webclass"] = previo["asignaturas_webclass"]    # si esta vez no se pudieron leer
 
     perfil = {"nombre": nombre, "rut": rut, "iduser": datos["iduser"],
               "colegio": datos["colegio"], "rol": datos["rol"],

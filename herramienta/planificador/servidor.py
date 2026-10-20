@@ -3,6 +3,7 @@
 Uso:  python servidor.py   (abre http://127.0.0.1:8501 en el navegador)
 Solo escucha en tu equipo (127.0.0.1): las claves de IA no salen de aquí.
 """
+import asyncio
 import getpass
 import hmac
 import io
@@ -21,14 +22,13 @@ from datetime import date
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from PIL import Image
 
 from nucleo import actualizador, barra, curriculo, guia_pie as pie, historial, ia, perfil as P, planificador, rutas, version, webclass as wc
 from nucleo.exportar_pdf import html_a_pdf
-from nucleo.exportar_word import guia_a_word
-from nucleo.exportar_xlsx import generar_excel
+# Pillow, Word (python-docx), Excel (openpyxl), PowerPoint, PDF y openai se cargan recién cuando se usan: así el
+# planificador abre en ~1,5 s en vez de ~5 s (una prueba revisa que no vuelvan a cargarse al arrancar).
 
 RAIZ = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(RAIZ, "web")
@@ -36,8 +36,8 @@ def carpeta_guias():
     return os.path.join(rutas.datos_usuario(), "guias_pie")     # las guías de la cuenta activa
 
 
-def carpeta_materiales():
-    return os.path.join(rutas.datos_usuario(), "materiales")    # el material de las planificaciones de la cuenta activa
+def carpeta_materiales(clave=None):
+    return os.path.join(rutas.datos_usuario(clave), "materiales")    # el material de las planificaciones de la cuenta
 PUERTO = int(os.environ.get("PLANIFICADOR_PUERTO", "8501"))
 
 app = FastAPI(title="Planificador de clases", docs_url="/api/docs", redoc_url=None)
@@ -136,11 +136,18 @@ def perfil_get():
     return {**asdict(perfil), "completo": perfil.completo, "voces": list(P.VOCES), "cuenta": _cuenta()}
 
 
+def _hora_valida(texto):
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(texto or "").strip())
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m and int(m.group(1)) < 24 and int(m.group(2)) < 60 else "08:00"
+
+
 @app.put("/api/perfil")
 async def perfil_put(request: Request):
     nuevo = await request.json()
     actual = P.cargar()
     datos = {**asdict(actual), **{k: v for k, v in nuevo.items() if k in asdict(actual) and k != "ruta_logo"}}
+    if rutas.nombre_de_cuenta():
+        datos["nombre_docente"] = actual.nombre_docente      # dentro de Barra el nombre es el de la cuenta: no se cambia aquí
     datos["duracion_defecto"] = int(datos.get("duracion_defecto") or 90)
     datos["actividades_extra"] = [
         {"nombre": str(e.get("nombre", "")).strip(), "curso": str(e.get("curso", "")).strip(),
@@ -148,9 +155,41 @@ async def perfil_put(request: Request):
         for e in datos.get("actividades_extra", []) if str(e.get("nombre", "")).strip()]
     datos["asignaturas_webclass"] = {str(k).strip(): str(v).strip() for k, v in (datos.get("asignaturas_webclass") or {}).items()
                                      if str(k).strip() and str(v).strip()}
+    datos["tema"] = datos.get("tema") if datos.get("tema") in P.TEMAS else "sistema"
+    datos["color_barra"] = bool(datos.get("color_barra"))
+    datos["hora_defecto"] = _hora_valida(datos.get("hora_defecto"))
+    datos["asignatura_defecto"] = str(datos.get("asignatura_defecto") or "").strip()[:120]
+    datos["curso_defecto"] = str(datos.get("curso_defecto") or "").strip()[:60]
+    plantillas = [p for p in (datos.get("plantillas") or []) if isinstance(p, dict) and str(p.get("texto", "")).strip()]
+    datos["plantillas"] = [{"nombre": (str(p.get("nombre", "")).strip() or str(p["texto"]).strip().splitlines()[0])[:80],
+                            "texto": str(p["texto"]).strip()[:4000]} for p in plantillas][:40]
     perfil = P.Perfil(**P._sanear(datos))
     P.guardar(perfil)
     return {"ok": True, "completo": perfil.completo}
+
+
+_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+@app.get("/api/tema")
+def tema_get():
+    """Cómo se ve el planificador: claro, oscuro o como el sistema (Mi perfil) y, si se pide, con el color que esta
+    cuenta eligió en la barra (tema.py de Barra: la misma paleta en las dos apps)."""
+    perfil = P.cargar()
+    color = {"paleta": "", "nombre": "", "claro": "", "oscuro": ""}
+    modulo = barra.modulo_de_barra(rutas.BARRA, "tema")
+    if modulo is not None and hasattr(modulo, "PALETAS"):
+        try:
+            with open(rutas.tema_de_barra(), encoding="utf-8-sig") as f:
+                clave = json.load(f).get("paleta", "")
+        except (OSError, ValueError, AttributeError):
+            clave = ""
+        clave = clave if clave in modulo.PALETAS else getattr(modulo, "PALETA_INICIAL", "")
+        paleta = modulo.PALETAS.get(clave) or {}
+        web = paleta.get("web") or {}
+        if all(_COLOR.fullmatch(str(web.get(k, ""))) for k in ("claro", "oscuro")):
+            color = {"paleta": clave, "nombre": paleta.get("nombre", clave), "claro": web["claro"], "oscuro": web["oscuro"]}
+    return {"tema": perfil.tema, "color_barra": perfil.color_barra, **color}
 
 
 @app.post("/api/perfil/logo")
@@ -186,7 +225,7 @@ def perfil_logo_ver():
 def ia_estado():
     cfg = ia.config()
     return {"proveedores": ia.estado_claves(), "proveedor": cfg["proveedor"], "modelo": cfg["modelo"],
-            "respaldo": cfg["respaldo"], "lista": bool(ia.hay_proveedor())}
+            "respaldo": cfg["respaldo"], "lista": bool(ia.hay_proveedor()), "colegio": ia.estado_colegio()}
 
 
 @app.post("/api/ia/claves")
@@ -204,13 +243,15 @@ async def ia_config(request: Request):
 
 @app.get("/api/ia/modelos")
 def ia_modelos(proveedor: str):
-    clave = ia.clave_guardada(ia.PROVEEDORES[proveedor]["secreto"]) if proveedor in ia.PROVEEDORES else ""
-    if not clave:
+    claves = ia.claves_de(proveedor) if proveedor in ia.PROVEEDORES else []
+    if not claves:
         raise HTTPException(400, "Ese proveedor no tiene clave guardada.")
+    clave = claves[0][0]                     # la propia si hay; si no, la del colegio (nunca se envía al navegador)
     try:
         return {"modelos": ia.modelos_disponibles(proveedor, clave), "conectado": True}
     except Exception as e:
-        return {"modelos": [ia.PROVEEDORES[proveedor]["modelo"]], "conectado": False, "error": str(e)[:200]}
+        error = str(e).replace(clave, "…")[:200]       # algunos proveedores repiten la clave en el error
+        return {"modelos": [ia.PROVEEDORES[proveedor]["modelo"]], "conectado": False, "error": error}
 
 
 # ───────────────────────── Currículo ─────────────────────────
@@ -324,11 +365,16 @@ def barra_estado(ruta: str | None = None):
             "cuenta": _cuenta(), "compatible": compatible, "mensaje_version": aviso_version}
 
 
+async def _con_barra(ruta, op, datos, timeout):
+    """barra.ejecutar en otro hilo: mientras WebClass responde, el servidor sigue atendiendo a la pantalla."""
+    return await asyncio.to_thread(barra.ejecutar, ruta, op, datos, timeout=timeout)
+
+
 @app.post("/api/barra/unidades")
 async def barra_unidades(request: Request):
     d = await request.json()
     ruta, cuenta = _contexto_barra(d.get("cuenta"))
-    return barra.ejecutar(ruta, "unidades", {"perfil": cuenta, "exigir_activo": rutas.EN_BARRA}, timeout=60)
+    return await _con_barra(ruta, "unidades", {"perfil": cuenta, "exigir_activo": rutas.EN_BARRA}, timeout=60)
 
 
 @app.post("/api/barra/catalogo")
@@ -336,20 +382,62 @@ async def barra_catalogo(request: Request):
     """OA de una unidad, tal como los tiene WebClass (solo lectura)."""
     d = await request.json()
     ruta, cuenta = _contexto_barra(d.get("cuenta"))
-    return barra.ejecutar(ruta, "catalogo", {"perfil": cuenta, "exigir_activo": rutas.EN_BARRA,
-                                             "id_unidad": str(d["id_unidad"])}, timeout=240)
+    return await _con_barra(ruta, "catalogo", {"perfil": cuenta, "exigir_activo": rutas.EN_BARRA,
+                                               "id_unidad": str(d["id_unidad"])}, timeout=240)
+
+
+def _clave_nivel(nombre):
+    """'Quinto Básico' -> '5'; 'Segundo Medio' -> '2M' (las claves de niveles de Barra). '' si no se conoce."""
+    if nombre not in wc.NIVELES_WEBCLASS:
+        return ""
+    i = wc.NIVELES_WEBCLASS.index(nombre)
+    return str(i + 1) if i < 8 else f"{i - 7}M"
+
+
+@app.post("/api/barra/subir")
+async def barra_subir(datos: str = Form(...), archivo: UploadFile = File(...)):
+    """Sube un archivo al banco de recursos de WebClass con Barra (o reutiliza uno propio con el mismo nombre y autor)."""
+    d = _datos(datos)
+    ruta_barra, cuenta = _contexto_barra(d.get("cuenta"))
+    nombre = str(d.get("nombre") or "").strip()
+    autor = str(d.get("autor") or "").strip() or rutas.nombre_de_cuenta()
+    niveles = [n for n in (_clave_nivel(x) for x in d.get("niveles") or []) if n]
+    asignaturas = wc.asignaturas_recurso()
+    archivo_nombre = os.path.basename(archivo.filename or "")
+    if not nombre or not autor:
+        raise HTTPException(400, "Escribe el nombre del recurso y el autor.")
+    if not niveles:
+        raise HTTPException(400, "Elige al menos un nivel.")
+    if d.get("asignatura") not in asignaturas:
+        raise HTTPException(400, "Elige la asignatura.")
+    if not archivo_nombre.lower().endswith(EXTENSIONES_RECURSO):
+        raise HTTPException(400, "WebClass solo recibe PDF, Word, Excel, PowerPoint, imágenes (JPG, PNG), audio (MP3, WAV) y video (MP4).")
+    tipo = wc.TIPOS_RECURSO.get(d.get("tipo") or "")
+    with tempfile.TemporaryDirectory() as carpeta:
+        ruta = os.path.join(carpeta, archivo_nombre)
+        with open(ruta, "wb") as f:
+            f.write(await archivo.read())
+        resultado = await _con_barra(ruta_barra, "subir", {
+            "perfil": cuenta, "exigir_activo": rutas.EN_BARRA, "ruta": ruta, "nombre": nombre, "autor": autor,
+            "niveles": niveles, "asignatura": asignaturas[d["asignatura"]], "visible": bool(d.get("visible", True)),
+            "tipo_file": tipo[1] if tipo else ""}, timeout=600)
+    return resultado
+
+
+def _filas_registro():
+    """Lo que el planificador creó en WebClass con la cuenta activa (más reciente primero)."""
+    import csv
+    ruta = rutas.registro_planificaciones()
+    if not ruta or not os.path.isfile(ruta):
+        return []
+    with open(ruta, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))[::-1]
 
 
 @app.get("/api/registro")
 def registro_get():
     """Lo que el planificador creó en WebClass con la cuenta activa (más reciente primero)."""
-    import csv
-    ruta = rutas.registro_planificaciones()
-    if not ruta or not os.path.isfile(ruta):
-        return {"clases": [], "archivo": ruta}
-    with open(ruta, newline="", encoding="utf-8") as f:
-        filas = list(csv.DictReader(f))
-    return {"clases": filas[::-1][:200], "archivo": ruta}
+    return {"clases": _filas_registro()[:200], "archivo": rutas.registro_planificaciones()}
 
 
 @app.post("/api/registro/comprobar")
@@ -357,9 +445,9 @@ async def registro_comprobar(request: Request):
     """Solo lectura en WebClass: marca cuáles de esas clases siguen existiendo."""
     d = await request.json()
     ruta, cuenta = _contexto_barra(d.get("cuenta"))
-    return barra.ejecutar(ruta, "comprobar", {"perfil": cuenta, "exigir_activo": rutas.EN_BARRA,
-                                              "clases": [{"id_unidad": c["id_unidad"], "idclase": c["idclase"]} for c in d.get("clases", [])]},
-                          timeout=240)
+    return await _con_barra(ruta, "comprobar", {"perfil": cuenta, "exigir_activo": rutas.EN_BARRA,
+                                                "clases": [{"id_unidad": c["id_unidad"], "idclase": c["idclase"]} for c in d.get("clases", [])]},
+                            timeout=240)
 
 
 @app.post("/api/registro/eliminar")
@@ -370,7 +458,7 @@ async def registro_eliminar(request: Request):
     clases = [{"id_unidad": str(c["id_unidad"]), "idclase": str(c["idclase"])} for c in d.get("clases", [])]
     if not clases:
         raise HTTPException(400, "No se indicó ninguna clase.")
-    return barra.ejecutar(ruta, "eliminar", {"perfil": cuenta, "exigir_activo": rutas.EN_BARRA, "clases": clases}, timeout=300)
+    return await _con_barra(ruta, "eliminar", {"perfil": cuenta, "exigir_activo": rutas.EN_BARRA, "clases": clases}, timeout=300)
 
 
 @app.post("/api/barra/enviar")
@@ -447,7 +535,7 @@ async def barra_crear(datos: str = Form(...), recursos: list[UploadFile] = File(
                 continue
             lista.append({"ruta": ruta, "nombre": (r.get("nombre") or os.path.splitext(os.path.basename(ruta))[0]).strip(),
                           "momento": r.get("momento", "desarrollo")})
-        resultado = barra.ejecutar(ruta_barra, "crear", {
+        resultado = await _con_barra(ruta_barra, "crear", {
             "perfil": cuenta, "exigir_activo": rutas.EN_BARRA, "destinos": destinos, "clase": clase, "oa": d.get("oa", []),
             "oa_textos": d.get("oa_textos", {}), "recursos": lista, "nivel_hint": d.get("nivel_hint", ""), "permitir_sin_oa": bool(d.get("permitir_sin_oa", True))},
             timeout=900)
@@ -457,13 +545,14 @@ async def barra_crear(datos: str = Form(...), recursos: list[UploadFile] = File(
 
 # ───────────────────────── Planificación ─────────────────────────
 
-def guardar_material(adjuntos, guia=None):
-    """Guarda en disco los archivos con que se generó la planificación (y la guía PIE, si se adjuntó).
-    Devuelve (id, [{nombre, tamano}], info_guia|None)."""
+def guardar_material(adjuntos, guia=None, clave=None):
+    """Guarda en disco los archivos con que se generó la planificación (y la guía PIE, si se adjuntó), en la carpeta de
+    esa cuenta (la que estaba activa al pedirla). Devuelve (id, [{nombre, tamano}], info_guia|None)."""
     if not adjuntos and not guia:
         return "", [], None
     mid = uuid.uuid4().hex[:12]
-    carpeta = os.path.join(carpeta_materiales(), mid)
+    base = carpeta_materiales(clave)
+    carpeta = os.path.join(base, mid)
     os.makedirs(carpeta, exist_ok=True)
     guardados = []
     for nombre, contenido in adjuntos:
@@ -478,7 +567,7 @@ def guardar_material(adjuntos, guia=None):
             f.write(guia[1])
         info_guia = {"nombre": os.path.basename(guia[0]), "guardado": nombre_guardado, "tamano": len(guia[1])}
     # Se conservan las últimas 40 planificaciones con material; las más antiguas se borran para no llenar el disco
-    carpetas = sorted((os.path.join(carpeta_materiales(), c) for c in os.listdir(carpeta_materiales())), key=os.path.getmtime)
+    carpetas = sorted((os.path.join(base, c) for c in os.listdir(base)), key=os.path.getmtime)
     for vieja in carpetas[:-40]:
         shutil.rmtree(vieja, ignore_errors=True)
     return mid, guardados, info_guia
@@ -492,26 +581,138 @@ def ruta_material(mid, nombre):
     return ruta if os.path.isfile(ruta) else None
 
 
-@app.post("/api/planificacion/generar")
-async def planificacion_generar(datos: str = Form(...), archivos: list[UploadFile] = File(default=[]),
-                                guia_pie: UploadFile | None = File(default=None)):
+async def _pedido_de_plan(datos, archivos, guia_pie):
+    """Lo que llega del formulario de «Planificar»: (datos, adjuntos, guía PIE, perfil, cuenta)."""
     d = _datos(datos)
     if not ia.hay_proveedor():
-        raise HTTPException(400, "Falta conectar la IA: agrega una clave en «Claves de IA».")
-    perfil = P.cargar()
+        raise HTTPException(400, ia.sin_claves_explicado())
     adjuntos = [(a.filename, await a.read()) for a in archivos if a.filename]
     guia = (guia_pie.filename, await guia_pie.read()) if guia_pie is not None and guia_pie.filename else None
+    return d, adjuntos, guia, P.cargar(), rutas.clave_activa()
+
+
+def _generar_plan(d, adjuntos, guia, perfil, clave, al_avanzar=None):
     resultado = planificador.generar(
         perfil, d["asignatura"], d["curso"], d.get("tema", ""), d.get("indicaciones", ""), int(d.get("duracion") or 90),
         actividad_extra=d.get("actividad_extra"), link_canva=d.get("canva", ""), url_video=d.get("video", ""),
-        archivos=adjuntos, guia_pie=guia)
+        archivos=adjuntos, guia_pie=guia, al_avanzar=al_avanzar)
     # El material original queda guardado: es el que se sube a WebClass como recurso y se asigna a la clase
-    resultado["material_id"], resultado["archivos_material"], resultado["guia_pie"] = guardar_material(adjuntos, guia)
+    resultado["material_id"], resultado["archivos_material"], resultado["guia_pie"] = guardar_material(adjuntos, guia, clave)
     return resultado
+
+
+@app.post("/api/planificacion/generar")
+async def planificacion_generar(datos: str = Form(...), archivos: list[UploadFile] = File(default=[]),
+                                guia_pie: UploadFile | None = File(default=None)):
+    """Genera y responde al final (respaldo de la pantalla si no puede seguir el avance en vivo)."""
+    return await asyncio.to_thread(_generar_plan, *await _pedido_de_plan(datos, archivos, guia_pie))
+
+
+# ── Trabajos con avance en vivo ──
+# Generar tarda hasta un minuto: corre en un hilo y la pantalla sigue su avance (GET /api/trabajos/{id}, Server-Sent
+# Events): las etapas y el texto mientras la IA lo escribe. Si esa conexión falla, pregunta por el resultado (…/resultado).
+_trabajos = {}               # id -> {"eventos": [(tipo, datos)], "estado": corriendo|listo|error, "resultado", "error", "fin"}
+_candado_trabajos = threading.Lock()
+MINUTOS_TRABAJO = 15         # un trabajo terminado se olvida después de este tiempo
+
+
+def _nuevo_trabajo():
+    ahora = time.time()
+    with _candado_trabajos:
+        for viejo in [k for k, t in _trabajos.items() if t["fin"] and ahora - t["fin"] > MINUTOS_TRABAJO * 60]:
+            _trabajos.pop(viejo, None)
+        tid = uuid.uuid4().hex
+        _trabajos[tid] = {"eventos": [], "estado": "corriendo", "resultado": None, "error": "", "fin": None}
+    return tid
+
+
+def _correr_trabajo(tid, funcion):
+    """Corre funcion(al_avanzar) y deja cada avance como evento. El evento final va ANTES del cambio de estado: así quien
+    sigue el trabajo nunca lo da por terminado sin haber recibido el resultado."""
+    trabajo = _trabajos[tid]
+    try:
+        resultado = funcion(lambda tipo, datos: trabajo["eventos"].append((tipo, datos)))
+        trabajo["eventos"].append(("fin", resultado))
+        trabajo.update(resultado=resultado, estado="listo")
+    except Exception as e:  # noqa: BLE001
+        mensaje = e.detail if isinstance(e, HTTPException) else (str(e) or e.__class__.__name__)
+        trabajo["eventos"].append(("falla", {"error": mensaje}))
+        trabajo.update(error=mensaje, estado="error")
+    finally:
+        trabajo["fin"] = time.time()
+
+
+@app.post("/api/planificacion/trabajo")
+async def planificacion_trabajo(datos: str = Form(...), archivos: list[UploadFile] = File(default=[]),
+                                guia_pie: UploadFile | None = File(default=None)):
+    """Empieza a generar y devuelve al tiro el id para seguir el avance."""
+    pedido = await _pedido_de_plan(datos, archivos, guia_pie)
+    tid = _nuevo_trabajo()
+    threading.Thread(target=_correr_trabajo, args=(tid, lambda avanzar: _generar_plan(*pedido, al_avanzar=avanzar)),
+                     daemon=True).start()
+    return {"id": tid}
+
+
+def _trabajo(tid):
+    trabajo = _trabajos.get(tid)
+    if trabajo is None:
+        raise HTTPException(404, "Ese trabajo ya no está (el planificador se reinició o pasó mucho rato): genera de nuevo.")
+    return trabajo
+
+
+def _mensajes_sse(eventos, desde):
+    """Eventos [(tipo, datos)] -> mensajes SSE con su número (id). Los trozos de texto seguidos van en un solo mensaje."""
+    salida, texto, ultimo = [], [], None
+    for i, (tipo, datos) in enumerate(eventos, start=desde):
+        if tipo == "trozo":
+            texto.append(datos)
+            ultimo = i
+            continue
+        if texto:
+            salida.append((ultimo, "trozo", {"t": "".join(texto)}))
+            texto = []
+        salida.append((i, tipo, datos))
+    if texto:
+        salida.append((ultimo, "trozo", {"t": "".join(texto)}))
+    return [f"id: {i}\nevent: {tipo}\ndata: {json.dumps(datos, ensure_ascii=False)}\n\n" for i, tipo, datos in salida]
+
+
+@app.get("/api/trabajos/{tid}")
+async def trabajo_eventos(tid: str, request: Request):
+    """Avance en vivo (Server-Sent Events). Si la conexión se corta, el navegador vuelve con Last-Event-ID y sigue donde iba."""
+    trabajo = _trabajo(tid)
+    try:
+        desde = int(request.headers.get("last-event-id", "-1")) + 1
+    except ValueError:
+        desde = 0
+
+    async def flujo():
+        i = max(0, desde)
+        yield "retry: 1500\n\n"
+        while True:
+            nuevos = trabajo["eventos"][i:]
+            for mensaje in _mensajes_sse(nuevos, i):
+                yield mensaje
+            i += len(nuevos)
+            if trabajo["estado"] != "corriendo" and i >= len(trabajo["eventos"]):
+                return
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(0.15)
+    return StreamingResponse(flujo(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/trabajos/{tid}/resultado")
+def trabajo_resultado(tid: str):
+    """Estado del trabajo sin conexión en vivo: la pantalla pregunta cada segundo hasta que termina."""
+    trabajo = _trabajo(tid)
+    etapa = next((datos for tipo, datos in reversed(trabajo["eventos"]) if tipo == "etapa"), None)
+    return {"estado": trabajo["estado"], "resultado": trabajo["resultado"], "error": trabajo["error"], "etapa": etapa}
 
 
 @app.post("/api/planificacion/excel")
 async def planificacion_excel(request: Request):
+    from nucleo.exportar_xlsx import generar_excel
     d = await request.json()
     meta, campos = d["meta"], d["campos"]
     oas = {o["codigo"]: o for o in curriculo.oa_del_curso(meta.get("asignatura"), meta.get("curso"))}
@@ -533,6 +734,22 @@ async def planificacion_excel(request: Request):
 @app.get("/api/historial")
 def historial_listar():
     return {"clases": [{"archivo": a, **r} for a, r in historial.listar()[:60]]}
+
+
+@app.get("/api/historial/todo")
+def historial_todo():
+    """Sección «Historial»: las clases guardadas y las creadas en WebClass, en una sola lista (solo de la cuenta activa)."""
+    return {"items": historial.unir(historial.listar()[:300], _filas_registro()[:300]), "en_barra": rutas.EN_BARRA}
+
+
+@app.get("/api/historial/clase/{archivo}")
+def historial_clase(archivo: str):
+    """Una clase guardada completa (para abrirla o duplicarla)."""
+    archivo = os.path.basename(archivo)
+    for nombre, plan in historial.listar():
+        if nombre == archivo:
+            return {**plan, "archivo_historial": nombre}
+    raise HTTPException(404, "Esa clase ya no está en el historial.")
 
 
 @app.post("/api/historial")
@@ -569,7 +786,9 @@ def _material(mid):
 
 @app.get("/api/pie/niveles")
 def pie_niveles():
-    return {"niveles": list(pie.NIVELES)}
+    # claves_sin_texto: partes de la guía que no son texto para leer (ids de imagen, búsquedas, respuesta correcta,
+    # pictogramas). El editor por campos no las muestra, igual que la revisión de ortografía.
+    return {"niveles": list(pie.NIVELES), "claves_sin_texto": sorted(pie._CLAVES_SIN_REVISAR)}
 
 
 @app.post("/api/pie/material")
@@ -589,6 +808,7 @@ def pie_imagen(mid: str, img_id: str, mini: int = 1):
         raise HTTPException(404)
     datos = im["datos"]
     if mini:
+        from PIL import Image
         pil = Image.open(io.BytesIO(datos))
         pil.thumbnail((320, 320))
         salida = io.BytesIO()
@@ -616,7 +836,7 @@ def _armar(d, spec):
 async def pie_generar(request: Request):
     d = await request.json()
     if not ia.hay_proveedor():
-        raise HTTPException(400, "Falta conectar la IA: agrega una clave en «Claves de IA».")
+        raise HTTPException(400, ia.sin_claves_explicado())
     if not d.get("tema", "").strip():
         raise HTTPException(400, "Escribe el tema de la guía.")
     perfil = P.cargar()
@@ -629,9 +849,9 @@ async def pie_generar(request: Request):
         faltan = [i for i in seleccion if not descripciones.get(i, "").strip()]
         if faltan:
             raise HTTPException(400, "Escribe qué muestra cada imagen marcada: " + ", ".join(faltan))
-    r = pie.generar(perfil, material, d.get("asignatura", ""), d["nivel"], d["tema"].strip(), d.get("indicaciones", ""),
-                    seleccion, descripciones)
-    armado = _armar({**d, "seleccion": seleccion}, r["spec"])
+    r = await asyncio.to_thread(pie.generar, perfil, material, d.get("asignatura", ""), d["nivel"], d["tema"].strip(),
+                                d.get("indicaciones", ""), seleccion, descripciones)
+    armado = await asyncio.to_thread(_armar, {**d, "seleccion": seleccion}, r["spec"])
     return {**r, **armado, "seleccion": seleccion}
 
 
@@ -644,18 +864,19 @@ async def pie_rearmar(request: Request):
 @app.post("/api/pie/ortografia")
 async def pie_ortografia(request: Request):
     d = await request.json()
-    spec, cambios = pie.revisar_ortografia(d["spec"])
+    spec, cambios = await asyncio.to_thread(pie.revisar_ortografia, d["spec"])
     return {"spec": spec, "ortografia": cambios, **_armar(d, spec)}
 
 
 @app.post("/api/pie/pdf")
 async def pie_pdf(request: Request):
     d = await request.json()
-    return Response(html_a_pdf(d["html"]), media_type="application/pdf")
+    return Response(await asyncio.to_thread(html_a_pdf, d["html"]), media_type="application/pdf")
 
 
 @app.post("/api/pie/word")
 async def pie_word(request: Request):
+    from nucleo.exportar_word import guia_a_word
     d = await request.json()
     perfil = P.cargar()
     material = _material(d.get("material_id"))

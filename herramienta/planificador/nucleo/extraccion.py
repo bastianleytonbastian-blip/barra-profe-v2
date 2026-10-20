@@ -2,12 +2,10 @@
 import re
 from io import BytesIO
 
-from docx import Document
-from pypdf import PdfReader
-
 
 def texto_pdf(archivo, avisos=None, nombre=""):
     """archivo: ruta o file-like. Marca cada página con '--- Página N ---' (el prompt cita esas páginas)."""
+    from pypdf import PdfReader          # se carga al leer un PDF, no al abrir el planificador
     lector = PdfReader(archivo)
     texto, vacias = "", 0
     for num, pagina in enumerate(lector.pages):
@@ -22,6 +20,7 @@ def texto_pdf(archivo, avisos=None, nombre=""):
 
 
 def texto_docx(archivo):
+    from docx import Document
     doc = Document(archivo)
     partes = [p.text for p in doc.paragraphs if p.text.strip()]
     for tabla in doc.tables:

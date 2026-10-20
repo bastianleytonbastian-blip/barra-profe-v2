@@ -32,7 +32,8 @@ except ImportError:  # no-Windows
 
 import rutas
 import webclass_tareas as w
-from barra_utiles import asignatura_sugerida, leer_preferencia_subida, ruta_preferencia_subida
+from barra_utiles import (asignatura_sugerida, asignaturas_de_la_cuenta, carpeta_con_asignatura, codigo_de_asignatura,
+                          leer_preferencia_subida, ruta_preferencia_subida)
 import webclass_recursos as r
 
 CARPETA = rutas.BUZON
@@ -53,27 +54,31 @@ def asignatura_principal(perfil: dict, nombre_perfil: str | None = None) -> int:
     (guardada en personal\\subida_<cuenta>.json) o, si nunca eligió, la que más dicta."""
     clave = ""
     if nombre_perfil:
-        clave = leer_preferencia_subida(ruta_preferencia_subida(rutas.PERSONAL, nombre_perfil))["asignatura"]
+        validas = [k for k, _nombre, _codigo in asignaturas_de_la_cuenta(perfil)]
+        clave = leer_preferencia_subida(ruta_preferencia_subida(rutas.PERSONAL, nombre_perfil), validas)["asignatura"]
     clave = clave or asignatura_sugerida(perfil)
-    return r.ASIGNATURAS.get(clave, r.ASIGNATURAS["ciencias"])
+    return codigo_de_asignatura(clave, perfil) or r.ASIGNATURAS["ciencias"]
 
 
 def destinos_del_perfil(perfil: dict, nombre_perfil: str | None = None) -> dict[str, tuple[list[int], int]]:
-    """Carpeta -> (nivel, asignatura). Una por nivel, más las especiales."""
+    """Carpeta -> (nivel, asignatura). Una por nivel, más las que el docente creó con nivel y asignatura en el nombre."""
     sector = asignatura_principal(perfil, nombre_perfil)
     destinos = {carpeta: ([nivel], sector) for carpeta, nivel in NIVELES_CARPETA.items()}
-    # Carpetas de otra asignatura que el docente ya tenga creadas a mano
-    # (ej. "5 basico Orientacion"): se respetan tal cual.
-    for extra, asignatura in ESPECIALES.items():
-        if os.path.isdir(os.path.join(CARPETA, extra)):
-            nivel = next((v for k, v in NIVELES_CARPETA.items() if extra.startswith(k)), None)
-            if nivel:
-                destinos[extra] = ([nivel], asignatura)
+    # «5 basico Orientacion», «7° Básico Música»…: se suben con ese nivel y esa asignatura. Se reconocen por el nombre,
+    # con las asignaturas de la cuenta (las que ofrece su WebClass), sin una lista fija.
+    asignaturas = asignaturas_de_la_cuenta(perfil)
+    try:
+        nombres = os.listdir(CARPETA)
+    except OSError:
+        nombres = []
+    for nombre in nombres:
+        if nombre in destinos or nombre.startswith("_") or not os.path.isdir(os.path.join(CARPETA, nombre)):
+            continue
+        reconocida = carpeta_con_asignatura(nombre, asignaturas)
+        if reconocida:
+            nivel, (_clave, _nombre, codigo) = reconocida
+            destinos[nombre] = ([nivel], codigo)
     return destinos
-
-
-# Carpetas con nombre propio que no son solo el nivel.
-ESPECIALES = {"5 basico Orientacion": r.ASIGNATURAS["orientacion"]}
 
 IGNORAR_EXT = {".tmp", ".crdownload", ".part", ".ini", ".lnk"}
 

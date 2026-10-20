@@ -2,6 +2,8 @@
 y luego abre el navegador. Lo llama el botón «Planificar» de Barra Profe (o se puede abrir con doble clic).
 
 Uso:  lanzar_planificador.pyw [ruta]      (ruta por defecto: planificar, o guia-pie, perfil, webclass)
+      lanzar_planificador.pyw --solo-servidor   deja el servidor listo en segundo plano, sin ventanas ni navegador
+                                                (lo pide la barra al abrirse si el docente eligió «Tener el planificador listo»)
 
 Cada computador (y cada usuario de Windows) levanta su propio servidor local, solo accesible desde ese equipo:
   · si el puerto habitual está ocupado por otro programa, usa el siguiente libre;
@@ -112,7 +114,17 @@ def asegurar_servidor():
         aviso.cerrar()
 
 
+def preparar():
+    """--solo-servidor: si este usuario no tiene ya un planificador abierto, lo inicia y termina (sin esperar ni avisar)."""
+    puerto, corriendo = buscar_puerto()
+    if puerto is not None and not corriendo:
+        iniciar_servidor(puerto)
+
+
 def main():
+    if "--solo-servidor" in sys.argv[1:]:
+        preparar()
+        return
     ruta = sys.argv[1].lstrip("#/") if len(sys.argv) > 1 else "planificar"
     puerto = asegurar_servidor()
     if puerto is None:

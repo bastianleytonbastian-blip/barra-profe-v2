@@ -30,12 +30,16 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import barra_utiles as bu
 import webclass_tareas as w
 
 WEBICP = "https://webicp2.webescuela.cl"
 API = f"{WEBICP}/api/portadaProfesor"
 COLEGIO = "1795"
 REGISTRO = os.path.join(w.carpeta_datos(), "registro_libro.csv")
+# Días y bloques que el docente marcó como «no hubo clases» (feriado, vacaciones…): no se registran ni se dan por
+# pendientes. main() carga los del docente; vacío, no se salta nada.
+SIN_CLASES: dict = {"dias": {}, "bloques": {}, "clases": {}}
 MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
          "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
@@ -469,7 +473,7 @@ def informe_mes(s, perfil: dict, fecha: datetime.date, token: str, todo: bool = 
     print(titulo)
     if corte and not todo:
         print(f"  (hasta hoy {corte:%d/%m}; con --mes-completo se ve el mes entero)")
-    pendientes = por_venir = 0
+    pendientes = por_venir = sin_clase = 0
     for curso, curso_id in perfil["curso_ids"].items():
         data = api_get(s, "getControlAsignatura",
                        {"idColegio": COLEGIO, "anio": 0,
@@ -495,8 +499,13 @@ def informe_mes(s, perfil: dict, fecha: datetime.date, token: str, todo: bool = 
             falta = [n for n, v in (("OA", b["val_oa"]), ("leccionario", b["val_leccionario"]),
                                     ("asistencia", b["val_asistencia"]), ("firma", b["val_firma"]))
                      if not v]
+            dia = dia_de(b.get("fecha"))
             if futuro:
                 estado = "aún no es la clase"
+            elif falta and dia and bu.bloque_sin_clase_por_hora(SIN_CLASES, curso,
+                                                                str(b.get("hora_inicio") or "")[:5], dia):
+                estado = "sin clases (lo marcaste)"
+                sin_clase += 1
             elif falta:
                 estado = "falta " + ", ".join(falta)
                 pendientes += 1
@@ -504,6 +513,8 @@ def informe_mes(s, perfil: dict, fecha: datetime.date, token: str, todo: bool = 
                 estado = "completo"
             print(f"    {b['fecha']} {b['hora_inicio']} {b['asignatura_nombre'][:22]:22} {estado}")
     print(f"\n  Bloques con algo pendiente: {pendientes}")
+    if sin_clase:
+        print(f"  (no se cuentan {sin_clase} bloque(s) de días o clases que marcaste sin clases)")
     if por_venir and not todo:
         print(f"  (además hay {por_venir} bloque(s) de días que todavía no llegan)")
 
@@ -626,6 +637,13 @@ def registrar_rango(s, perfil: dict, desde: datetime.date, hasta: datetime.date,
     clases de la planificación también se comparten entre días.
     """
     dias = list(dias) if dias is not None else _dias_habiles(desde, hasta)
+    marcados = [d for d in dias if bu.dia_sin_clases(SIN_CLASES, d)]
+    if marcados:
+        print(f"  Sin clases (lo marcaste), no se revisan: {', '.join(f'{d:%d/%m}' for d in marcados)}")
+        dias = [d for d in dias if d not in marcados]
+    if not dias:
+        print("  No queda ningún día por revisar.")
+        return [], []
     cursos = {c.strip().upper() for c in filtro_cursos.split(",")} if filtro_cursos else None
     elegidos = {c: i for c, i in perfil["curso_ids"].items() if not cursos or c in cursos}
     meses = sorted({(d.year, d.month) for d in dias})
@@ -681,6 +699,9 @@ def registrar_dia(s, perfil: dict, fecha: datetime.date, token: str, inicio,
     cache, cache_unidades = caches["clases"], caches["unidades"]
     resumen, sin_firma = [], []
     elecciones = elecciones or {}
+    if bu.dia_sin_clases(SIN_CLASES, fecha):
+        print(f"  [SIN CLASES] {fecha:%d/%m/%Y}: marcaste que ese día no hubo clases; no se registra nada.")
+        return resumen, sin_firma
 
     elegidos = [(c, i) for c, i in perfil["curso_ids"].items() if not cursos or c in cursos]
     total = 2 * len(elegidos)           # primero se lee cada curso, después se registra
@@ -699,7 +720,7 @@ def registrar_dia(s, perfil: dict, fecha: datetime.date, token: str, inicio,
                 cache[u["id"]] = w.listar_clases(s, u["id"])
 
     def procesar(b: dict, curso: str, curso_id: int, dia_completo: list, etiqueta: str,
-                 clave: str, hora: str, asig: str, grupo: str) -> None:
+                 clave: str, hora: str, asig: str, grupo: str, sin_clase: dict | None = None) -> None:
         """Un bloque: asistencia, OA y leccionario. Cada resultado se informa como ítem."""
         # Asistencia: se replica del bloque anterior con el curso completo.
         if not b["val_asistencia"]:
@@ -709,9 +730,10 @@ def registrar_dia(s, perfil: dict, fecha: datetime.date, token: str, inicio,
             print(f"  [{marca}] {etiqueta}: {detalle_asis}")
             if fuente:
                 w.item(clave, "propuesto" if simular else "hecho", etiqueta, grupo,
-                       "asistencia", detalle_asis)
+                       "asistencia", detalle_asis, sin_clase=sin_clase)
             else:
-                w.item(clave, "pendiente", etiqueta, grupo, "asistencia", motivo=detalle_asis)
+                w.item(clave, "pendiente", etiqueta, grupo, "asistencia", motivo=detalle_asis,
+                       sin_clase=sin_clase)
             if not simular:
                 registrar([inicio.strftime("%d/%m/%Y %H:%M"), fecha.strftime("%d/%m/%Y"),
                            curso, hora, asig, "", f"asistencia: {detalle_asis}",
@@ -746,7 +768,7 @@ def registrar_dia(s, perfil: dict, fecha: datetime.date, token: str, inicio,
                             for _u, c in candidatas]
             print(f"  [PENDIENTE] {etiqueta}: {motivo}.")
             w.item(clave, "pendiente", etiqueta, grupo, "OA y leccionario", motivo=motivo,
-                   opciones=opciones)
+                   opciones=opciones, sin_clase=sin_clase)
             resumen.append((etiqueta, "PENDIENTE: " + motivo))
             if not simular:
                 registrar([inicio.strftime("%d/%m/%Y %H:%M"), fecha.strftime("%d/%m/%Y"),
@@ -759,7 +781,7 @@ def registrar_dia(s, perfil: dict, fecha: datetime.date, token: str, inicio,
         if simular:
             print(f"  [SIMULAR] {etiqueta} -> {clase['nombre'][:45]}")
             w.item(clave, "propuesto", etiqueta, grupo, "OA y leccionario",
-                   f"clase «{clase['nombre'][:60]}»")
+                   f"clase «{clase['nombre'][:60]}»", sin_clase=sin_clase)
             resumen.append((etiqueta, f"se declararía: {clase['nombre']}"))
             return
 
@@ -805,6 +827,12 @@ def registrar_dia(s, perfil: dict, fecha: datetime.date, token: str, inicio,
                 etiqueta = f"{fecha:%d/%m} {etiqueta}"
                 clave += f"|{fecha:%Y-%m-%d}"
                 grupo = f"{DIAS_CORTOS[fecha.weekday()]} {fecha:%d/%m}"
+            clave_dia = bu.clave_con_fecha(clave, fecha)
+            if clave_dia in SIN_CLASES["bloques"]:
+                print(f"  [SIN CLASE] {etiqueta}: marcaste que no hubo esa clase.")
+                continue
+            sin_clase = {"campo": "bloques", "clave": clave_dia, "dia": fecha.isoformat(),
+                         "titulo": etiqueta if con_fecha else f"{fecha:%d/%m} {etiqueta}"}
             if not b["val_firma"]:
                 sin_firma.append(etiqueta)
 
@@ -813,7 +841,7 @@ def registrar_dia(s, perfil: dict, fecha: datetime.date, token: str, inicio,
                                          ("asistencia", "val_asistencia")) if not b.get(k)]
                 if faltan:
                     w.item(clave, "propuesto", etiqueta, grupo, "bloque",
-                           "se completará: " + ", ".join(faltan))
+                           "se completará: " + ", ".join(faltan), sin_clase=sin_clase)
                     resumen.append((etiqueta, "por completar: " + ", ".join(faltan)))
                 continue
 
@@ -823,7 +851,7 @@ def registrar_dia(s, perfil: dict, fecha: datetime.date, token: str, inicio,
                 resumen.append((etiqueta, "omitido por ti"))
                 continue
             try:
-                procesar(b, curso, curso_id, dia_completo, etiqueta, clave, hora, asig, grupo)
+                procesar(b, curso, curso_id, dia_completo, etiqueta, clave, hora, asig, grupo, sin_clase)
             except Exception as exc:                      # noqa: BLE001
                 # Un bloque que falle no deja sin informar a los demás: se
                 # cuenta como "no pude" con su motivo y se sigue con el resto.
@@ -1033,8 +1061,9 @@ def main() -> None:
     args = p.parse_args()
 
     perfil = w.PERFILES[args.perfil]
-    global REGISTRO
+    global REGISTRO, SIN_CLASES
     REGISTRO = w.rutas.registro("registro_libro", args.perfil)      # el CSV de este docente
+    SIN_CLASES = bu.leer_sin_clases(w.rutas.sin_clases(args.perfil))
     seleccion = w.leer_seleccion(args.seleccion)
     elecciones = w.leer_elecciones(args.seleccion)
     fecha = _fecha_pedida(args.fecha)
@@ -1098,8 +1127,10 @@ def main() -> None:
                                            args.cursos, args.simular, seleccion=seleccion,
                                            elecciones=elecciones)
 
-    w.imprimir_resultado(w.ITEMS, sin_firma,
-                         vacio="No tienes clases ese día." if not w.ITEMS else "")
+    vacio = ("Marcaste ese día como sin clases: no hay nada que registrar."
+             if bu.dia_sin_clases(SIN_CLASES, fecha) and not (args.completar_mes or args.fechas or args.desde)
+             else "No tienes clases ese día.")
+    w.imprimir_resultado(w.ITEMS, sin_firma, vacio=vacio if not w.ITEMS else "")
     print(f"\nRegistro guardado en {os.path.basename(REGISTRO)}")
 
 

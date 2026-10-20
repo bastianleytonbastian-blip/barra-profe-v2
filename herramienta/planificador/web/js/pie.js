@@ -1,16 +1,19 @@
 // Página «Guía PIE»: genera guías visuales para estudiantes no lectoras y las exporta a HTML, PDF y Word.
 import { api } from "./api.js";
 import { compartido } from "./estado.js";
-import { $, $$, aviso, cargando, descargar, esc } from "./util.js";
+import { conTexto, etiquetaDeRuta, textosDeGuia, valorEn } from "./logica.js";
+import { $, $$, aviso, cargando, cronometro, descargar, esc } from "./util.js";
 import { panelRecurso } from "./recurso.js";
 
 let material = null;  // {id, imagenes, vision, max_vision} del material leído
 let guia = null;      // última guía generada: {spec, html, archivo, ortografia, avisos, usado, datos}
 let pdf = null, word = null;
+let omitir = [];      // partes de la guía que no son texto para leer (las indica el servidor) + el tipo de cierre
 
 export async function montarPie(cont) {
-  const [{ asignaturas }, { niveles }, { guias }] = await Promise.all([
+  const [{ asignaturas }, { niveles, claves_sin_texto: sinTexto = [] }, { guias }] = await Promise.all([
     api.get("/api/curriculo/asignaturas"), api.get("/api/pie/niveles"), api.get("/api/pie/guardadas")]);
+  omitir = [...sinTexto, "tipo"];
   material = null;
   guia = null; pdf = null; word = null;
   const colegio = compartido.perfil?.colegio;
@@ -86,6 +89,7 @@ async function generar() {
   if (!$("#p-tema").value.trim()) { aviso("Escribe el tema de la guía.", "error"); $("#p-tema").focus(); return; }
   const btn = $("#p-generar");
   btn.disabled = true;
+  let detener = () => {};
   try {
     const files = [...$("#p-archivos").files];
     if (files.length && !material) {
@@ -94,6 +98,7 @@ async function generar() {
       pintarImagenes();
     }
     $("#p-estado").innerHTML = cargando("Creando la guía PIE y revisando la ortografía. Puede tardar un minuto…");
+    detener = cronometro($("#p-estado .cargando span:last-child"), "Creando la guía PIE y revisando la ortografía");
     const d = datosGuia();
     const r = await api.post("/api/pie/generar", d);
     guia = { ...r, datos: { ...d, seleccion: r.seleccion } };
@@ -103,7 +108,7 @@ async function generar() {
     $("#p-resultado").scrollIntoView({ behavior: "smooth" });
   } catch (e) {
     $("#p-estado").innerHTML = `<div class="nota error">No se pudo crear la guía: ${esc(e.message)}</div>`;
-  } finally { btn.disabled = false; }
+  } finally { detener(); btn.disabled = false; }
 }
 
 function pintarGuia() {
@@ -125,10 +130,16 @@ function pintarGuia() {
         <button class="btn" id="g-orto" type="button">🔤 Revisar ortografía otra vez</button></div>
       <div class="barra espaciada" id="g-listos"></div>
       <p class="ayuda espaciada">El PDF y el Word usan los pictogramas automáticos; los que cambies a mano en la vista previa solo quedan en el HTML (para conservarlos, ábrelo en el navegador y usa Imprimir → Guardar como PDF).</p></section>
-    <section class="tarjeta" id="g-subir" hidden><h2>Subir la guía a WebClass</h2><div id="g-subir-panel" class="espaciada"></div></section>
-    <details class="plegable"><summary>Editar el contenido de la guía (sin volver a generarla)</summary>
-      <div class="campo"><textarea class="grande" id="g-json" spellcheck="false">${esc(JSON.stringify(guia.spec, null, 2))}</textarea></div>
-      <div class="barra espaciada"><button class="btn" id="g-rearmar" type="button">Rearmar guía con estos cambios</button></div></details>
+    <section class="tarjeta" id="g-subir" hidden><h2>Subir la guía a WebClass</h2>
+      <p class="sub">Prepara el PDF o el Word (arriba) y súbelo desde aquí.</p><div id="g-subir-panel" class="espaciada"></div></section>
+    <details class="plegable"><summary>Editar los textos de la guía (sin volver a generarla)</summary>
+      <p class="ayuda">Cambia lo que quieras y presiona «Rearmar». Las imágenes y pictogramas se mantienen.</p>
+      <div class="editor-guia espaciada" id="g-campos"></div>
+      <div class="barra espaciada"><button class="btn primario" id="g-rearmar" type="button">Rearmar la guía con estos textos</button></div>
+      <details class="plegable espaciada"><summary>Avanzado: editar todo el contenido (JSON)</summary>
+        <p class="ayuda">Para cambiar imágenes (img1, img2…) o búsquedas de fotos. Un error de formato no se guarda.</p>
+        <div class="campo"><textarea class="grande" id="g-json" spellcheck="false" aria-label="Contenido de la guía en JSON"></textarea></div>
+        <div class="barra espaciada"><button class="btn" id="g-rearmar-json" type="button">Rearmar con este contenido</button></div></details></details>
     <section class="tarjeta espaciada"><h2>Vista previa</h2>
       <iframe class="vista-previa espaciada" id="g-previa" title="Vista previa de la guía" sandbox="allow-scripts allow-popups"></iframe></section>`;
   $("#g-previa").srcdoc = guia.html;
@@ -136,8 +147,40 @@ function pintarGuia() {
   $("#g-pdf").onclick = () => preparar("pdf", base);
   $("#g-word").onclick = () => preparar("word", base);
   $("#g-orto").onclick = reOrtografia;
-  $("#g-rearmar").onclick = rearmar;
+  $("#g-rearmar").onclick = rearmarConCampos;
+  $("#g-rearmar-json").onclick = rearmarConJson;
+  pintarCampos();
   mostrarListos(base);
+}
+
+/** Un campo de texto por cada texto de la guía, agrupados por parte (Sección 1, Sección 2, Cierre…). */
+function pintarCampos() {
+  const grupos = new Map();
+  for (const { ruta, texto } of textosDeGuia(guia.spec, omitir)) {
+    // objetivo → «General» · secciones[2].… → «Sección 3» · conceptos_clave[0] y cierre.… → su propio grupo
+    const largo = ruta.length === 1 ? 0 : typeof ruta[1] === "number" && ruta.length > 2 ? 2 : 1;
+    const clave = largo ? ruta.slice(0, largo).join(".") : "general";
+    const resto = ruta.slice(largo);
+    if (!grupos.has(clave)) grupos.set(clave, { titulo: tituloDeGrupo(ruta.slice(0, largo)), campos: [] });
+    grupos.get(clave).campos.push({ ruta, texto, etiqueta: etiquetaDeRuta(typeof resto[0] === "number" || !resto.length ? ruta : resto) });
+  }
+  $("#g-campos").innerHTML = [...grupos.values()].map((g) => `<fieldset><legend>${esc(g.titulo)}</legend>
+    ${g.campos.map((c) => `<label><span>${esc(c.etiqueta)}${esCorrecta(c.ruta) ? " (correcta)" : ""}</span>
+      <input type="text" data-ruta="${esc(JSON.stringify(c.ruta))}" value="${esc(c.texto)}"></label>`).join("")}</fieldset>`).join("");
+  $("#g-json").value = JSON.stringify(guia.spec, null, 2);
+}
+
+function tituloDeGrupo(ruta) {
+  if (!ruta.length) return "General";
+  if (ruta.length === 1 && ruta[0] === "conceptos_clave") return "Conceptos clave";
+  const titulo = valorEn(guia.spec, [...ruta, "titulo"]);
+  return `${etiquetaDeRuta(ruta)}${typeof titulo === "string" && titulo.trim() ? `: ${titulo}` : ""}`;
+}
+
+/** ¿Es la opción correcta de un «Marcar»? (se muestra al lado para no cambiarla sin querer) */
+function esCorrecta(ruta) {
+  if (ruta.at(-2) !== "opciones") return false;
+  return valorEn(guia.spec, ruta.slice(0, -2))?.correcta === ruta.at(-1);
 }
 
 async function preparar(tipo, base) {
@@ -149,7 +192,7 @@ async function preparar(tipo, base) {
     const d = guia.datos;
     const blob = tipo === "pdf"
       ? await api.blob("/api/pie/pdf", { html: guia.html })
-      : await api.blob("/api/pie/word", { spec: JSON.parse($("#g-json").value), nivel: d.nivel, asignatura: d.asignatura, material_id: d.material_id, seleccion: d.seleccion });
+      : await api.blob("/api/pie/word", { spec: guia.spec, nivel: d.nivel, asignatura: d.asignatura, material_id: d.material_id, seleccion: d.seleccion });
     if (tipo === "pdf") pdf = blob; else word = blob;
     mostrarListos(base);
   } catch (e) { aviso(e.message, "error"); }
@@ -173,18 +216,30 @@ function mostrarListos(base) {
     const [, blob, nombre, mime] = archivos[0];
     const file = new File([blob], nombre, { type: mime });
     panelRecurso($("#g-subir-panel"), { archivo: file, nombreSugerido: `Guía PIE - ${guia.datos.tema}`, curso: guia.datos.nivel,
-      tipoSugerido: "Guía PIE (NEE → Necesidades Especiales)" });
+      asignatura: guia.datos.asignatura, tipoSugerido: "Guía PIE (NEE → Necesidades Especiales)" });
   }
 }
 
-async function rearmar() {
-  let spec;
-  try { spec = JSON.parse($("#g-json").value); } catch (e) { aviso(`El contenido tiene un error de formato: ${e.message}`, "error"); return; }
+function rearmarConCampos() {
+  let spec = guia.spec;
+  $$("#g-campos [data-ruta]").forEach((campo) => {
+    const ruta = JSON.parse(campo.dataset.ruta);
+    if (campo.value !== valorEn(spec, ruta)) spec = conTexto(spec, ruta, campo.value);
+  });
+  return rearmar(spec);
+}
+
+function rearmarConJson() {
+  try { return rearmar(JSON.parse($("#g-json").value)); } catch (e) { aviso(`El contenido tiene un error de formato: ${e.message}`, "error"); }
+}
+
+async function rearmar(spec) {
   try {
     const r = await api.post("/api/pie/rearmar", { ...guia.datos, spec });
     Object.assign(guia, { spec, html: r.html, avisos: r.avisos, archivo: r.archivo });
     pdf = word = null;
     $("#g-previa").srcdoc = guia.html;
+    pintarCampos();
     mostrarListos(guia.archivo.replace(/\.html$/, ""));
     aviso("Guía rearmada.");
   } catch (e) { aviso(e.message, "error"); }
@@ -194,7 +249,7 @@ async function reOrtografia() {
   const b = $("#g-orto");
   b.disabled = true;
   try {
-    const r = await api.post("/api/pie/ortografia", { ...guia.datos, spec: JSON.parse($("#g-json").value) });
+    const r = await api.post("/api/pie/ortografia", { ...guia.datos, spec: guia.spec });
     Object.assign(guia, { spec: r.spec, html: r.html, avisos: r.avisos, archivo: r.archivo, ortografia: r.ortografia });
     pdf = word = null;
     pintarGuia();

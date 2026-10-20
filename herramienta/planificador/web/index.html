@@ -6,9 +6,21 @@
 <meta name="planificador-token" content="__TOKEN__">
 <title>Planificador de Clases</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231F3B57'/><path d='M9 8h14v3H9zm0 6h14v3H9zm0 6h9v3H9z' fill='white'/></svg>">
+<script>
+  // Claro u oscuro y el color de la barra antes de pintar nada (lo mismo que la última vez; después se confirma con el servidor)
+  try {
+    var t = JSON.parse(localStorage.getItem("planificador_tema") || "null"), r = document.documentElement;
+    if (t && (t.tema === "claro" || t.tema === "oscuro")) r.setAttribute("data-tema", t.tema);
+    if (t && t.vars) for (var k in t.vars) if (/^--marca-/.test(k)) r.style.setProperty(k, t.vars[k]);
+  } catch (e) { /* sin almacenamiento: se usa el del sistema */ }
+</script>
 <link rel="stylesheet" href="/css/estilos.css">
 </head>
 <body>
+<div class="banner-caido" id="caido" role="alert" hidden>
+  <span><b>El planificador no responde.</b> Puede que se haya cerrado: ábrelo de nuevo desde la barra con el botón «Planificar».</span>
+  <button class="btn chico" id="reintentar" type="button">Reintentar</button>
+</div>
 <div class="app">
   <aside class="lateral" id="lateral">
     <div class="marca">
@@ -19,6 +31,7 @@
     </div>
     <nav class="menu" id="menu" aria-label="Secciones">
       <a href="#/planificar" data-ruta="planificar"><span class="ico" data-ico="plan"></span>Planificar una clase</a>
+      <a href="#/historial" data-ruta="historial"><span class="ico" data-ico="historial"></span>Historial</a>
       <a href="#/guia-pie" data-ruta="guia-pie"><span class="ico" data-ico="pie"></span>Guía PIE</a>
       <a href="#/webclass" data-ruta="webclass"><span class="ico" data-ico="subir"></span>Subir a WebClass</a>
       <a href="#/perfil" data-ruta="perfil"><span class="ico" data-ico="perfil"></span>Mi perfil</a>

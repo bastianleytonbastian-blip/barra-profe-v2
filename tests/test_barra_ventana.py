@@ -49,7 +49,44 @@ class VentanaBarra(unittest.TestCase):
         patrulla.start()
         self.addCleanup(patrulla.stop)
         self.mod["EJECUCIONES"] = os.path.join(carpeta, "ultimas.json")
-        with open(self.mod["CONFIG"], encoding="utf-8") as f:
+        # Botones, preferencias y posición: copias en la carpeta temporal (las pruebas nunca tocan los tuyos).
+        if not hasattr(type(self), "_config_real"):
+            type(self)._config_real = self.mod["CONFIG"]
+        copia = os.path.join(carpeta, "herramientas.json")
+        import shutil
+        shutil.copy2(type(self)._config_real, copia)
+        self.mod["CONFIG"] = copia
+        self.mod["PREFERENCIAS"] = os.path.join(carpeta, "preferencias.json")
+        self.mod["ESTADO"] = os.path.join(carpeta, "posicion.json")
+        self.mod["SIN_CLASES"] = os.path.join(carpeta, "sin_clases.json")
+        # Buzón del colegio: archivos en la carpeta temporal, sin GitHub y sin tocar el llavero de Windows.
+        self.mod["BUZON_COLEGIO"] = os.path.join(carpeta, "colegio.json")
+        self.mod["AVISOS_LEIDOS"] = os.path.join(carpeta, "avisos_leidos.json")
+        self.codigo_colegio = ""
+        self.publicados = []
+
+        def sin_red(*_a, **_k):
+            raise OSError("sin red en las pruebas")
+
+        def guardar_codigo(codigo):
+            self.codigo_colegio = self.mod["colegio"].normalizar_codigo(codigo)
+            return self.codigo_colegio
+        for nombre, falso in (("descargar", sin_red), ("es_administrador", lambda *a, **k: False),
+                              ("codigo_guardado", lambda vigencia=30: self.codigo_colegio),
+                              ("guardar_codigo", guardar_codigo),
+                              ("publicar", lambda paquete, carpeta, **k: self.publicados.append(paquete))):
+            parche = mock.patch.object(self.mod["colegio"], nombre, falso)
+            parche.start()
+            self.addCleanup(parche.stop)
+        # Por defecto, un equipo de un solo profesor (sin PIN); las pruebas del PIN lo cambian.
+        self.mod["equipo_compartido"] = lambda: False
+        self.mod["RUTA_DESBLOQUEO"] = os.path.join(carpeta, "desbloqueo.json")
+        if not hasattr(type(self), "_buscar_periodica_real"):
+            type(self)._buscar_periodica_real = self.mod["Barra"]._buscar_periodica
+        busqueda = mock.patch.object(self.mod["Barra"], "_buscar_periodica", lambda s: None)   # sin GitHub
+        busqueda.start()
+        self.addCleanup(busqueda.stop)
+        with open(copia, encoding="utf-8-sig") as f:
             herramientas = json.load(f)
         self.barra = self.mod["Barra"](herramientas)
         self.barra.fijada = True        # que no se pliegue sola a mitad de una prueba lenta
@@ -147,11 +184,73 @@ class VentanaBarra(unittest.TestCase):
         self.assertIsNone(otra.selector_asignatura.combo, "con «no volver a preguntar» solo informa")
         otra.destroy()
 
-    def test_la_barra_tiene_buscar_actualizaciones_y_avisa_del_resultado(self):
+    def _ventanas_auxiliares(self):
+        """Las ventanas que antes se ubicaban suponiendo la barra a la derecha (y la de arrastrar, que se salía)."""
+        buzon = os.path.join(self.carpeta, "buzon_ubicacion")
+        for nivel in ("1 basico", "5 basico", "1 medio"):
+            os.makedirs(os.path.join(buzon, nivel), exist_ok=True)
+        self.mod["BUZON"] = buzon
+        self.mod["HORARIO_SEMANA"] = os.path.join(self.carpeta, "horario.json")
+        origen = os.path.join(self.carpeta, "guia.pdf")
+        with open(origen, "wb") as f:
+            f.write(b"%PDF")
+        mes = {"nombre": "Completar mes atrasado", "pregunta": "¿Qué mes?", "opciones": "meses",
+               "destino": "libro --completar-mes --mes {valor}"}
+        return {"Colores": lambda: self.mod["VentanaColores"](self.barra),
+                "Profesores": lambda: self.mod["VentanaDocentes"](self.barra),
+                "Horario": lambda: self.mod["VentanaHorario"](self.barra),
+                "Preguntar": lambda: self.mod["VentanaPreguntar"](self.barra, "Completar mes atrasado", mes),
+                "Arrastrar": lambda: self.mod["VentanaSoltar"](self.barra, [origen])}
+
+    def test_las_ventanas_quedan_dentro_del_monitor_y_al_lado_de_la_barra(self):
+        for lado in ("derecha", "izquierda"):
+            self.barra.lado = lado
+            self.barra._colocar()
+            self.barra.update()
+            izq, arriba, der, abajo = self.barra._area()
+            for nombre, crear in self._ventanas_auxiliares().items():
+                with self.subTest(lado=lado, ventana=nombre):
+                    v = crear()
+                    try:
+                        v.update_idletasks()
+                        self.barra.update()
+                        x, y = v.winfo_x(), v.winfo_y()
+                        ancho, alto = v.winfo_reqwidth(), v.winfo_reqheight()
+                        self.assertGreaterEqual(x, izq)
+                        self.assertLessEqual(x + ancho, der, "se sale por la derecha del monitor")
+                        self.assertGreaterEqual(y, arriba)
+                        if alto <= abajo - arriba:
+                            self.assertLessEqual(y + alto, abajo, "se sale por abajo")
+                        if lado == "derecha":
+                            self.assertLessEqual(x + ancho, self.barra.winfo_x(), "queda encima de la barra")
+                        else:
+                            self.assertGreaterEqual(x, self.barra.winfo_x() + self.barra.winfo_width(),
+                                                    "queda encima de la barra")
+                    finally:
+                        v.destroy()
+
+    def test_completar_mes_ofrece_los_meses_de_este_anio(self):
+        import barra_utiles as u
+        v = self._ventanas_auxiliares()["Preguntar"]()
+        try:
+            esperados = u.meses_escolares()
+            self.assertEqual([o["valor"] for o in v.opciones], [m["clave"] for m in esperados])
+            self.assertTrue(v.opciones[0]["texto"].endswith("(este mes)"))
+            self.assertEqual(v.elegida.get(), esperados[0]["clave"], "parte marcado el mes actual")
+        finally:
+            v.destroy()
+
+    def _ajustes(self, pestana=None):
+        self.barra.abrir_ajustes(pestana)
+        self.barra.update()
+        return [w for w in self.barra.winfo_children() if isinstance(w, self.mod["VentanaAjustes"])][0]
+
+    def test_buscar_actualizaciones_esta_en_ajustes_y_avisa_del_resultado(self):
         import actualizador
         from unittest import mock
-        textos = self._textos(self.barra)
-        self.assertIn("Buscar actualizaciones", textos)
+        ajustes = self._ajustes("Actualizaciones")
+        self.assertIn("Buscar actualizaciones ahora", self._textos(ajustes))
+        ajustes.destroy()
         mensajes = []
         mb = mock.Mock(showinfo=lambda t, m: mensajes.append(m))
         with mock.patch.dict(self.mod, {"messagebox": mb}):
@@ -164,24 +263,638 @@ class VentanaBarra(unittest.TestCase):
         self.assertIn("Ya tienes la última versión", mensajes[0])
         self.assertIn("No pude consultar", mensajes[1])
 
-    def test_el_pie_cabe_en_la_barra_y_ningun_enlace_queda_oculto(self):
-        self.barra.update()
-        ancho = self.barra.winfo_width()
-        pie = self.barra.pie_botones
-        enlaces = []
-        def recorrer(w):
-            for h in w.winfo_children():
-                if h.winfo_class() == "Label" and h.cget("text"):
-                    enlaces.append(h)
-                recorrer(h)
-        recorrer(pie)
-        textos = [e.cget("text") for e in enlaces]
-        for esperado in ("Ver registro", "Editar botones", "Ver tour", "Buscar actualizaciones"):
+    def test_la_cabecera_cabe_y_ningun_boton_queda_oculto(self):
+        b = self.barra
+        b.update()
+        for boton in (b.boton_ajustes, b.boton_fijar, b.boton_cerrar):
+            derecha = boton.winfo_rootx() + boton.winfo_width() - b.winfo_rootx()
+            self.assertLessEqual(derecha, b.winfo_width(), f"«{boton.cget('text')}» se sale de la barra")
+            self.assertGreaterEqual(boton.winfo_width(), boton.winfo_reqwidth(), f"«{boton.cget('text')}» recortado")
+        # La cabecera no se desplaza: queda arriba aunque el resto se mueva.
+        b._desplazar(10 ** 6)
+        b.update()
+        self.assertEqual(b.cabecera.winfo_rooty(), b.winfo_rooty())
+        b._desplazar(-10 ** 6)
+
+    def test_ajustes_reune_lo_que_antes_estaba_en_el_pie(self):
+        ajustes = self._ajustes()
+        self.assertEqual(list(ajustes.pestanas.pestanas),
+                         ["Apariencia", "Botones", "Comportamiento", "Windows y sonido", "Profesor", "Respaldo",
+                          "Actualizaciones", "Ayuda"])
+        ajustes.pestanas.elegir("Ayuda")
+        textos = self._textos(ajustes)
+        for esperado in ("Ver el recorrido", "Ver el registro", "Abrir la carpeta"):
             self.assertIn(esperado, textos)
-        for e in enlaces:
-            derecha = e.winfo_rootx() + e.winfo_width() - self.barra.winfo_rootx()
-            self.assertLessEqual(derecha, ancho, f"«{e.cget('text')}» se sale de la barra ({derecha} > {ancho})")
-            self.assertGreaterEqual(e.winfo_width(), e.winfo_reqwidth(), f"«{e.cget('text')}» queda recortado")
+        self.barra.abrir_ajustes("Apariencia")              # una sola ventana de ajustes
+        self.assertEqual(len([w for w in self.barra.winfo_children()
+                              if isinstance(w, self.mod["VentanaAjustes"])]), 1)
+        self.assertEqual(ajustes.pestanas.actual, "Apariencia")
+        ajustes.destroy()
+
+    def test_los_grupos_se_pliegan_y_solo_favoritos_parte_abierto(self):
+        b = self.barra
+        grupos = b.grupos_ui
+        self.assertEqual(next(iter(grupos)), self.mod["GRUPO_FAVORITOS"])
+        abiertos = [g for g, i in grupos.items() if i["abierto"]]
+        self.assertEqual(abiertos, [self.mod["GRUPO_FAVORITOS"]], "solo los favoritos parten abiertos")
+        cerrado = next(g for g, i in grupos.items() if not i["abierto"])
+        self.assertFalse(grupos[cerrado]["armado"], "un grupo cerrado no arma sus botones (abre más rápido)")
+        b.alternar_grupo(cerrado)
+        self.assertTrue(grupos[cerrado]["armado"])
+        self.assertIn(cerrado, self.mod["leer_preferencias"]()["grupos_abiertos"], "se recuerda abierto")
+        b.alternar_grupo(cerrado)
+        self.assertNotIn(cerrado, self.mod["leer_preferencias"]()["grupos_abiertos"])
+
+    def test_favoritos_se_agregan_y_quitan_con_clic_derecho(self):
+        b = self.barra
+        favoritos = [h["nombre"] for h in b.grupos_ui[self.mod["GRUPO_FAVORITOS"]]["botones"]]
+        otro = next(h for h in b.herramientas if h.get("nombre") not in favoritos and not h.get("oculto"))
+        b.alternar_favorito(otro)
+        nuevos = [h["nombre"] for h in b.grupos_ui[self.mod["GRUPO_FAVORITOS"]]["botones"]]
+        self.assertIn(otro["nombre"], nuevos)
+        self.assertEqual(set(nuevos) - {otro["nombre"]}, set(favoritos), "los demás favoritos siguen")
+        with open(self.mod["CONFIG"], encoding="utf-8-sig") as f:
+            guardados = {x["nombre"] for x in json.load(f) if x.get("favorito")}
+        self.assertEqual(guardados, set(nuevos), "queda escrito en los botones del docente")
+        b.alternar_favorito(otro)
+        self.assertNotIn(otro["nombre"], [h["nombre"] for h in b.grupos_ui[self.mod["GRUPO_FAVORITOS"]]["botones"]])
+
+    def test_la_tarjeta_hoy_plegada_muestra_lo_justo(self):
+        import datetime
+        b = self.barra
+        estado = {"fecha": datetime.date.today().strftime("%d/%m/%Y"), "bloques": [{}],
+                  "sin_firmar": [{"curso": "6BB", "hora": "09:40-11:10"}],
+                  "atrasados": [{"fecha": "13/10/2026"}],
+                  "jefatura": {"curso": "5BA", "ausentes": ["Diaz", "Espinoza"], "atrasadas": []}}
+        ruta = os.path.join(self.carpeta, "estado_firmas.json")
+        with open(ruta, "w", encoding="utf-8") as f:
+            json.dump(estado, f)
+        self.mod["ESTADO_FIRMAS"] = ruta
+        b._refrescar_firmas()
+        self.assertFalse(b.hoy_abierta)
+        self.assertEqual(b.jefatura_texto.cget("text"), "5BA · 2 ausentes", "plegada: cuántos, sin nombres")
+        self.assertNotIn("\n", b.libro_texto.cget("text"), "plegada: una línea del libro")
+        b.alternar_hoy()
+        self.assertIn("Diaz, Espinoza", b.jefatura_texto.cget("text"))
+        self.assertTrue(self.mod["leer_preferencias"]()["hoy_abierta"])
+        b.alternar_hoy()
+
+    def test_ya_no_hay_notas_para_el_asistente_y_el_atajo_solo_abre_la_barra(self):
+        b = self.barra
+        self.assertNotIn("NOTAS PARA EL ASISTENTE", self._textos(b))
+        self.assertFalse(hasattr(b, "alternar_notas"))
+        self.assertNotIn("notas", [p["id"] for p in self.mod["TOUR_PASOS"]])
+        b._plegar(forzar=True)
+        b.senales.put("anotar")
+        b._atender_senal()
+        self.assertTrue(b.desplegada)
+
+    def test_un_clic_en_el_libro_o_en_los_ausentes_despliega_el_detalle(self):
+        import datetime
+        b = self.barra
+        estado = {"fecha": datetime.date.today().strftime("%d/%m/%Y"), "bloques": [{}],
+                  "sin_firmar": [{"curso": "6BB", "hora": "09:40-11:10"}],
+                  "jefatura": {"curso": "5BA", "ausentes": ["Diaz", "Espinoza"], "atrasadas": []}}
+        ruta = os.path.join(self.carpeta, "estado_firmas.json")
+        with open(ruta, "w", encoding="utf-8") as f:
+            json.dump(estado, f)
+        self.mod["ESTADO_FIRMAS"] = ruta
+        b._refrescar_firmas()
+        if b.hoy_abierta:
+            b.alternar_hoy()
+        for etiqueta in (b.libro_texto, b.jefatura_texto):
+            etiqueta.event_generate("<Button-1>")
+            b.update()
+            self.assertTrue(b.hoy_abierta, "un clic despliega")
+            self.assertIn("Diaz, Espinoza", b.jefatura_texto.cget("text"))
+            self.assertTrue(b.libro_enlace.winfo_manager(), "abierta, el libro en Webclass queda a un clic")
+            etiqueta.event_generate("<Button-1>")
+            b.update()
+            self.assertFalse(b.hoy_abierta, "otro clic lo pliega")
+            self.assertFalse(b.libro_enlace.winfo_manager())
+
+    def test_los_favoritos_de_fabrica_traen_escala_de_notas_y_no_abrir_y_firmar(self):
+        botones = [{"nombre": n} for n in ("Abrir y firmar", "Escala de notas", "Registrar libro", "Asignar clases",
+                                          "Planificar", "Subir recursos", "Mi horario")]
+        nombres = [b["nombre"] for b in self.mod["Barra"]._favoritos(botones)]
+        self.assertEqual(nombres, ["Registrar libro", "Asignar clases", "Planificar", "Subir recursos", "Escala de notas"])
+        elegidos = [{"nombre": "Abrir y firmar", "favorito": True}, {"nombre": "Escala de notas", "favorito": False}]
+        self.assertEqual([b["nombre"] for b in self.mod["Barra"]._favoritos(elegidos)], ["Abrir y firmar"],
+                         "lo que el profesor eligió se respeta")
+
+    def test_el_aviso_de_version_nueva_aparece_bajo_la_cabecera(self):
+        b = self.barra
+        self.assertFalse(b.aviso_actualizacion.winfo_manager())
+        b._mostrar_actualizacion({"version": "9.9.9", "notas": ""})
+        b.update()
+        self.assertTrue(b.aviso_actualizacion.winfo_manager())
+        self.assertIn("9.9.9", b.aviso_actualizacion.cget("text"))
+        self.assertGreater(b.aviso_actualizacion.winfo_rooty(), b.cabecera.winfo_rooty())
+        b._pintar_aviso_actualizacion("")
+        self.assertFalse(b.aviso_actualizacion.winfo_manager())
+
+    def test_busca_actualizaciones_al_abrir_y_cada_6_horas(self):
+        from unittest import mock
+        programado, hilos = [], []
+
+        class HiloFalso:                       # no sale a GitHub: solo se anota qué se iba a buscar
+            def __init__(self, target=None, args=(), daemon=None):
+                hilos.append(args)
+
+            def start(self):
+                pass
+        with mock.patch.object(self.mod["threading"], "Thread", HiloFalso), \
+                mock.patch.object(self.barra, "after", lambda ms, f: programado.append(ms)):
+            type(self)._buscar_periodica_real(self.barra)
+        self.assertEqual(len(hilos), 1, "busca al tiro")
+        self.assertEqual(programado, [6 * 3600 * 1000], "y vuelve a mirar en 6 horas")
+
+    def test_soltar_ordena_los_niveles_y_sube_ahora_solo_lo_soltado(self):
+        buzon = os.path.join(self.carpeta, "buzon_niveles")
+        for nivel in ("1 medio", "2 basico", "5 basico", "5 basico Orientacion", "8 basico", "1 basico"):
+            os.makedirs(os.path.join(buzon, nivel))
+        open(os.path.join(buzon, "8 basico", "otro.pdf"), "w").close()     # algo que ya esperaba en el buzón
+        self.mod["BUZON"] = buzon
+        self.mod["perfil_de_trabajo"] = lambda: {"curso_niveles": {"5BA": 25, "8BA": 28}}
+        origen = os.path.join(self.carpeta, "guia.pdf")
+        with open(origen, "wb") as f:
+            f.write(b"%PDF")
+        v = self.mod["VentanaSoltar"](self.barra, [origen])
+        self.assertEqual(v.propias, ["5 basico", "5 basico Orientacion", "8 basico"])
+        self.assertEqual(v.otras, ["1 basico", "2 basico", "1 medio"])
+        self.assertIn("5° Básico · Orientación", self._textos(v))
+        self.assertNotIn("1° Medio", self._textos(v), "los otros niveles parten plegados")
+        abiertos = []
+        self.mod["abrir"], original = (lambda h, m: abiertos.append(h)), self.mod["abrir"]
+        try:
+            v._copiar("5 basico")
+            self.assertIn("Subir ahora", self._textos(v))
+            v._subir_ahora()
+        finally:
+            self.mod["abrir"] = original
+        claves, todas = abiertos[0]["_seleccion"]
+        self.assertTrue(abiertos[0]["_confirmado"])
+        self.assertEqual(claves, ["5 basico/guia.pdf"])
+        self.assertEqual(sorted(todas), ["5 basico/guia.pdf", "8 basico/otro.pdf"], "lo demás del buzón no se sube")
+
+    # ------------------------------------------------------- fase 2: ajustes sin tocar archivos
+    GLOBALES_DOCENTE = ("DOCENTES", "PERFIL", "NOMBRE_COMPLETO", "NOMBRE", "_sufijo", "RUTA_MENSAJES",
+                        "ESTADO_FIRMAS", "TEMA", "HORARIO_SEMANA", "TAREAS", "EJECUCIONES", "TOUR", "PREFERENCIAS",
+                        "PALETA", "ESCALA_LETRA", "ANCHO")
+
+    def _guardar_globales(self):
+        """Cambiar de docente o de apariencia toca variables del programa: se dejan como estaban al terminar."""
+        antes = {k: self.mod[k] for k in self.GLOBALES_DOCENTE}
+        antes.update({k: v for k, v in self.mod.items() if k.startswith("COLOR_")})
+        self.addCleanup(lambda: self.mod.update(antes))
+
+    def _esperar_ventana(self, clase):
+        self._esperar(lambda: any(isinstance(w, self.mod[clase]) for w in self.barra.winfo_children()), 3)
+        return [w for w in self.barra.winfo_children() if isinstance(w, self.mod[clase])]
+
+    def test_cambiar_la_letra_se_aplica_sin_reabrir_la_barra(self):
+        self._guardar_globales()
+        self.mod["TEMA"] = os.path.join(self.carpeta, "tema.json")
+        reabiertas = []
+        self.enterContext(mock.patch.dict(self.mod, {"reabrir_barra": lambda: reabiertas.append(1)}))
+        b = self.barra
+        antes = abs(int(b.fuente.cget("size")))
+        ajustes = self._ajustes("Apariencia")
+        self.mod["guardar_apariencia"](b, "Apariencia", letra="grande")
+        self.assertEqual(reabiertas, [], "ya no se cierra y se vuelve a abrir")
+        self.assertTrue(b.winfo_exists())
+        self.assertGreater(abs(int(b.fuente.cget("size"))), antes)
+        self.assertFalse(ajustes.winfo_exists(), "la ventana con la letra de antes se cierra…")
+        nuevas = self._esperar_ventana("VentanaAjustes")
+        self.assertEqual([v.pestanas.actual for v in nuevas], ["Apariencia"], "…y vuelve abierta en la misma pestaña")
+        with open(self.mod["TEMA"], encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["letra"], "grande")
+
+    def test_cambiar_el_color_no_reabre_la_barra(self):
+        self._guardar_globales()
+        self.mod["TEMA"] = os.path.join(self.carpeta, "tema.json")
+        reabiertas = []
+        self.enterContext(mock.patch.dict(self.mod, {"reabrir_barra": lambda: reabiertas.append(1)}))
+        self.mod["guardar_color"]("claro", self.barra)
+        self.assertEqual(reabiertas, [])
+        self.assertEqual(self.barra.cget("bg"), self.mod["PALETAS"]["claro"]["fondo"])
+        self.assertEqual(self.barra.cabecera.cget("bg"), self.mod["PALETAS"]["claro"]["fondo"])
+
+    def test_cambiar_de_profesor_no_reabre_la_barra(self):
+        self._guardar_globales()
+        datos = os.path.join(self.carpeta, "datos")
+        perfiles = os.path.join(self.carpeta, "perfiles")
+        os.makedirs(datos)
+        os.makedirs(perfiles)
+        for clave, nombre in (("ana", "Ana Pérez"), ("beto", "Beto Soto")):
+            with open(os.path.join(perfiles, clave + ".json"), "w", encoding="utf-8") as f:
+                json.dump({"nombre": nombre}, f)
+        self.enterContext(mock.patch.object(self.mod["rutas"], "dato", lambda nombre: os.path.join(datos, nombre)))
+        self.enterContext(mock.patch.object(self.mod["rutas"], "PERFILES", perfiles))
+        self.barra.cambiar_docente("beto")
+        self.assertTrue(self.barra.winfo_exists())
+        self.assertEqual(self.mod["PERFIL"], "beto")
+        self.assertEqual(self.barra.saludo.cget("text"), "Beto")
+        self.assertEqual(self.mod["EJECUCIONES"], os.path.join(datos, "ultimas_ejecuciones_beto.json"))
+
+    def test_no_cambia_de_profesor_mientras_algo_corre(self):
+        avisos = []
+        self.enterContext(mock.patch.object(self.mod["messagebox"], "showinfo", lambda *a, **k: avisos.append(a)))
+        self.enterContext(mock.patch.object(self.mod["rutas"], "fijar_perfil_activo", lambda c: avisos.append(c)))
+        self.barra.corriendo["Asignar clases"] = mock.Mock()
+        try:
+            self.mod["elegir_docente"]("otro", self.barra)
+        finally:
+            self.barra.corriendo.clear()
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("Espera a que termine", avisos[0][1])
+
+    def _editor(self):
+        ajustes = self._ajustes("Botones")
+        editor = [w for w in ajustes.pestanas.panel.winfo_children() if isinstance(w, self.mod["EditorBotones"])][0]
+        return ajustes, editor
+
+    def _visibles_en_la_barra(self):
+        return [h["nombre"] for g in self.barra.grupos_ui.values() for h in g["botones"]]
+
+    def test_editor_oculta_ordena_y_marca_favoritos(self):
+        ajustes, editor = self._editor()
+        grupo = [h["nombre"] for h in editor.botones if h.get("grupo") == "Correo y nube"]
+        if len(grupo) < 2:
+            self.skipTest("estos botones no traen el grupo «Correo y nube»")
+        editor._alternar_visible(grupo[0])
+        with open(self.mod["CONFIG"], encoding="utf-8-sig") as f:
+            self.assertTrue(next(x for x in json.load(f) if x["nombre"] == grupo[0])["oculto"])
+        self.assertNotIn(grupo[0], self._visibles_en_la_barra(), "oculto: ya no está en la barra")
+        editor._alternar_visible(grupo[0])
+        self.assertIn(grupo[0], self._visibles_en_la_barra())
+        editor._mover(grupo[1], -1)
+        self.assertEqual([h["nombre"] for h in editor.botones if h.get("grupo") == "Correo y nube"][:2],
+                         [grupo[1], grupo[0]])
+        editor._alternar_favorito(grupo[0])
+        self.assertIn(grupo[0], [h["nombre"] for h in self.barra.grupos_ui[self.mod["GRUPO_FAVORITOS"]]["botones"]])
+        ajustes.destroy()
+
+    def test_editor_agrega_edita_y_borra_un_boton_propio(self):
+        ajustes, editor = self._editor()
+        nuevo = {"nombre": "Mi sitio", "icono": "🌐", "grupo": "Mis enlaces", "tipo": "url",
+                 "destino": "https://ejemplo.cl", "ayuda": ""}
+        self.assertEqual(editor.guardar_boton(None, dict(nuevo)), "")
+        self.assertIn("Mi sitio", self._visibles_en_la_barra() + [h["nombre"] for h in self.barra.herramientas])
+        self.assertIn("ya hay", editor.guardar_boton(None, dict(nuevo)).lower())
+        self.assertEqual(editor.guardar_boton("Mi sitio", {**nuevo, "nombre": "Mi sitio 2"}), "")
+        self.assertIn("Mi sitio 2", [h["nombre"] for h in self.barra.herramientas])
+        with mock.patch.object(self.mod["messagebox"], "askyesno", lambda *a, **k: True):
+            editor._borrar("Mi sitio 2")
+        self.assertNotIn("Mi sitio 2", [h["nombre"] for h in self.barra.herramientas])
+        ajustes.destroy()
+
+    def test_la_ventana_de_boton_valida_la_direccion(self):
+        ajustes, editor = self._editor()
+        v = self.mod["VentanaBoton"](editor, None)
+        v.nombre.set("Sitio de prueba")
+        v.destino.set("ejemplo.cl")
+        v._guardar()
+        self.assertIn("https://", v.aviso.cget("text"))
+        v.destino.set("https://ejemplo.cl")
+        v._guardar()
+        self.assertFalse(v.winfo_exists())
+        self.assertIn("Sitio de prueba", [h["nombre"] for h in self.barra.herramientas])
+        ajustes.destroy()
+
+    def test_configurar_una_cuenta_sin_consola(self):
+        import types
+        self._guardar_globales()
+        llamadas = {}
+        falso = types.ModuleType("configurar")
+
+        def preparar(rut, clave):
+            llamadas["preparar"] = (rut, clave)
+            return {"rut": rut, "curso_ids": {"5BA": 1, "5BB": 2}, "unidades": [1, 2, 3]}
+
+        def guardar(preparada, clave, nombre, jefatura):
+            llamadas["guardar"] = (clave, nombre, jefatura)
+            return "ana"
+        falso.preparar_cuenta, falso.guardar_cuenta = preparar, guardar
+        elegidos = []
+        self.enterContext(mock.patch.dict(sys.modules, {"configurar": falso}))
+        self.enterContext(mock.patch.dict(self.mod, {"elegir_docente": lambda c, b=None: elegidos.append(c),
+                                                     "docentes_registrados": lambda: [("ana", "Ana")]}))
+        v = self.mod["VentanaCuenta"](self.barra)
+        v.rut.set("12.345.678-9")
+        v.clave.set("x")
+        v.nombre.set("Ana Pérez")
+        v._conectar()
+        self.assertIn("RUT", v.aviso.cget("text"), "con puntos no se conecta")
+        self.assertNotIn("preparar", llamadas)
+        v.rut.set("12345678-9")
+        v._conectar()
+        self._esperar(lambda: v.preparada is not None, 5)
+        self.assertEqual(llamadas["preparar"], ("12345678-9", "x"))
+        self.assertIn("2 cursos", self._textos(v))
+        v.jefatura.set("5BB")
+        with mock.patch.object(self.mod["messagebox"], "askyesno", lambda *a, **k: True):
+            v._guardar()
+        self.assertEqual(llamadas["guardar"], ("x", "Ana Pérez", "5BB"))
+        self.assertEqual(elegidos, ["ana"])
+
+    def test_el_respaldo_no_lleva_secretos(self):
+        mapa = self.mod["archivos_de_respaldo"]()
+        for nombre, ruta in mapa.items():
+            self.assertNotIn("claves", nombre + ruta, "las claves de IA no van al respaldo")
+            self.assertNotIn("perfiles", ruta.replace("\\", "/"), "el perfil de Webclass (con el RUT) tampoco")
+        for esperado in ("personal/herramientas.json", "datos/apariencia.json", "datos/lista.json"):
+            self.assertIn(esperado, mapa)
+
+    def test_windows_y_sonido_ofrece_reparar_los_accesos_rotos(self):
+        import barra_utiles as u
+        actual = os.path.join(self.mod["CARPETA"], "barra_profe.pyw")
+        falsos = [{"ruta": os.path.join(self.carpeta, "Anotar - Barra Profe.lnk"), "carpeta": "escritorio",
+                   "destino": "pythonw.exe", "argumentos": '"C:\\\\viejo\\\\barra_profe.pyw"', "atajo": "Alt+Ctrl+A"}]
+        escritos = []
+        self.enterContext(mock.patch.object(u, "leer_accesos", lambda: falsos))
+        self.enterContext(mock.patch.object(u, "escribir_acceso", lambda ruta, destino, argumentos, carpeta, atajo="":
+                                            escritos.append((ruta, argumentos, atajo))))
+        ajustes = self._ajustes("Windows y sonido")
+        self._esperar(lambda: "Repararlos" in self._textos(ajustes), 5)
+        self.assertIn("Hay 1 acceso", self._textos(ajustes))
+        ajustes._reparar(u.accesos_de_la_barra(falsos))
+        self._esperar(lambda: escritos, 5)
+        self.assertEqual(escritos[0][0], falsos[0]["ruta"])
+        self.assertIn(actual, escritos[0][1], "ahora abre esta barra")
+        self.assertEqual(escritos[0][2], "CTRL+ALT+A", "y conserva el atajo que tenía")
+        ajustes.destroy()
+
+    def test_la_demora_para_esconderse_se_puede_elegir(self):
+        b = self.barra
+        self.assertEqual(b._ciclos_para_plegar(), self.mod["CICLOS_FUERA_PARA_PLEGAR"])
+        b.preferencias = {"demora_plegado": 2.0}
+        self.assertEqual(b._ciclos_para_plegar(), 10)
+        b.preferencias = {"demora_plegado": "basura"}
+        self.assertEqual(b._ciclos_para_plegar(), self.mod["CICLOS_FUERA_PARA_PLEGAR"])
+
+    def test_el_planificador_puede_quedar_listo_al_abrir_la_barra(self):
+        lanzados = []
+        with mock.patch.object(self.mod["subprocess"], "Popen", lambda args, **_k: lanzados.append(list(args))):
+            ajustes = self._ajustes("Comportamiento")
+            self.assertIn("Dejarlo listo al abrir la barra", self._textos(ajustes))
+            ajustes.var_plan_listo.set(True)
+            ajustes._alternar_planificador_listo()
+            self.assertTrue(self.mod["leer_preferencias"]()["planificador_listo"])
+            ajustes.var_plan_listo.set(False)
+            ajustes._alternar_planificador_listo()
+            self.assertFalse(self.mod["leer_preferencias"]()["planificador_listo"])
+            ajustes.destroy()
+        preparados = [a for a in lanzados if "--solo-servidor" in a]
+        self.assertEqual(len(preparados), 1, "al marcarlo se deja listo al tiro; al quitarlo no se lanza nada")
+        self.assertEqual(preparados[0][1:], [self.mod["LANZADOR_PLANIFICADOR"], "--solo-servidor"])
+
+    # ── Fase 5: para cualquier docente (sin asistente personal) ──
+    def _horario_semana(self, bloques, generado=None):
+        import datetime
+        ruta = os.path.join(self.carpeta, "horario_semana.json")
+        with open(ruta, "w", encoding="utf-8") as f:
+            json.dump({"generado": generado or datetime.date.today().strftime("%d/%m/%Y 08:00"), "bloques": bloques}, f)
+        return ruta
+
+    def test_sin_asistente_ahora_y_luego_salen_de_mi_horario_de_webclass(self):
+        import datetime
+        dia = datetime.date.today().weekday()
+        ruta = self._horario_semana([{"dia": dia, "inicio": "00:00", "fin": "23:59", "curso": "5BA",
+                                      "asignatura": "Ciencias Naturales"}])
+        with mock.patch.dict(self.mod, {"HORARIO": os.path.join(self.carpeta, "sin_asistente.json"), "HORARIO_SEMANA": ruta}):
+            self.barra._refrescar_agenda()
+            self.assertEqual(self.barra.ahora_texto.cget("text"), "Ahora · 5BA · Ciencias · hasta 23:59")
+            os.remove(ruta)
+            self.barra._refrescar_agenda()
+            self.assertEqual((self.barra.ahora_texto.cget("text"), self.barra.luego_texto.cget("text")), ("", ""),
+                             "sin ningún horario no se inventa «Hoy no hay clases»")
+
+    def test_sin_asistente_lee_mi_horario_solo_si_falta_y_una_vez(self):
+        lanzados = []
+        falta = os.path.join(self.carpeta, "nunca_leido.json")
+
+        def comando(*partes, **_k):
+            lanzados.append(partes)
+            return [sys.executable, "-c", "pass"]
+        with mock.patch.dict(self.mod, {"HORARIO": os.path.join(self.carpeta, "sin_asistente.json"), "HORARIO_SEMANA": falta,
+                                        "PERFIL": "ana", "comando_webclass": comando}):
+            self.barra._horario_pedido = False
+            self.barra._vigilar_horario()
+            self.barra._vigilar_horario()
+            self.assertEqual(lanzados, [("horario", "--salida", falta)], "una sola vez por sesión")
+            lanzados.clear()
+            self.barra._horario_pedido = False
+            self.mod["HORARIO_SEMANA"] = self._horario_semana([{"dia": 0, "inicio": "08:00", "fin": "09:00", "curso": "5BA"}])
+            self.barra._vigilar_horario()
+            self.assertEqual(lanzados, [], "uno de esta semana no se vuelve a leer")
+
+    # ── PIN de cada profesor (equipos compartidos) ──
+    def _compartido(self):
+        """Equipo con varios profesores mientras dure la prueba."""
+        parche = mock.patch.dict(self.mod, {"equipo_compartido": lambda: True})
+        parche.start()
+        self.addCleanup(parche.stop)
+
+    def _ventana_pin(self):
+        self.barra.update()
+        abiertas = [w for w in self.barra.winfo_children() if isinstance(w, self.mod["VentanaPin"])]
+        return abiertas[-1] if abiertas else None
+
+    def _esperar_que(self, condicion, segundos=5):
+        import time
+        fin = time.time() + segundos
+        while time.time() < fin and not condicion():
+            self.barra.update()
+            time.sleep(0.05)
+        self.assertTrue(condicion())
+
+    def test_parte_bloqueada_solo_en_un_equipo_compartido(self):
+        self.assertFalse(self.mod["debe_partir_bloqueada"](), "un solo profesor: sin PIN")
+        self._compartido()
+        self.assertTrue(self.mod["debe_partir_bloqueada"]())
+        self.mod["marcar_desbloqueo"](self.mod["RUTA_DESBLOQUEO"], self.mod["PERFIL"])
+        self.assertFalse(self.mod["debe_partir_bloqueada"](), "se reabrió sola recién desbloqueada")
+        self.assertTrue(self.mod["debe_partir_bloqueada"](), "eso sirve una sola vez")
+
+    def test_bloqueada_no_deja_usar_nada_hasta_escribir_el_pin(self):
+        self._compartido()
+        b, perfil = self.barra, self.mod["PERFIL"]
+        self.mod["guardar_pin"](self.mod["ruta_pin"](self.carpeta, perfil), "2468")
+        b.bloquear()
+        b.update()
+        self.assertTrue(b.bloqueada)
+        self.assertEqual(b.velo.winfo_manager(), "place", "un velo tapa los botones")
+        self.assertIn("escribe tu PIN", self._textos(b))
+        with mock.patch.object(self.mod["webbrowser"], "open") as navegador:
+            self.mod["abrir"]({"nombre": "Una página", "tipo": "url", "destino": "https://example.com"}, b)
+        navegador.assert_not_called()
+        b.abrir_ajustes()
+        self.assertFalse([w for w in b.winfo_children() if isinstance(w, self.mod["VentanaAjustes"])])
+        ventana = self._ventana_pin()
+        self.assertIsNotNone(ventana, "en vez de abrir el botón, pide el PIN")
+        ventana.campo.insert(0, "1111")
+        ventana._revisar_pin()
+        self.assertTrue(b.bloqueada)
+        self.assertIn("incorrecto", ventana.aviso.cget("text"))
+        self.assertEqual(ventana.campo.get(), "", "el PIN equivocado se borra")
+        ventana.campo.insert(0, "2468")
+        ventana._revisar_pin()
+        b.update()
+        self.assertFalse(b.bloqueada)
+        self.assertIsNone(b.velo)
+        self.assertIsNone(self._ventana_pin())
+        self.assertTrue(self.mod["DESBLOQUEO"]["activo"])
+
+    def test_el_campo_del_pin_solo_acepta_4_numeros(self):
+        self._compartido()
+        self.mod["guardar_pin"](self.mod["ruta_pin"](self.carpeta, self.mod["PERFIL"]), "2468")
+        self.barra.bloquear()
+        self.barra.pedir_pin()
+        ventana = self._ventana_pin()
+        for tecla in "12a456":
+            ventana.campo.insert("end", tecla)
+        self.assertEqual(ventana.campo.get(), "1245", "las letras y el quinto número no entran")
+        ventana.destroy()
+
+    def test_sin_pin_entra_con_su_contrasena_de_webclass_y_crea_uno(self):
+        import configurar
+        self._compartido()
+        b, perfil = self.barra, self.mod["PERFIL"]
+        if not self.mod["leer_json"](os.path.join(self.mod["rutas"].PERFILES, f"{perfil}.json")).get("rut"):
+            self.skipTest("el perfil activo de este equipo no tiene RUT")
+        b.bloquear()
+        b.pedir_pin()
+        ventana = self._ventana_pin()
+        self.assertIn("contraseña de Webclass", ventana.subtitulo.cget("text"))
+        with mock.patch.object(configurar, "verificar_contrasena") as verificar:
+            ventana.contrasena.set("secreta")
+            ventana._revisar_webclass()
+            self._esperar_que(lambda: hasattr(ventana, "nuevo"))
+        self.assertEqual(verificar.call_args.args[1], "secreta")
+        self.assertEqual(ventana.contrasena.get(), "", "la contraseña no queda en la ventana")
+        ventana.nuevo.insert(0, "1357")
+        ventana.repetido.insert(0, "1350")
+        ventana._guardar()
+        self.assertIn("no son iguales", ventana.aviso.cget("text"))
+        ventana.repetido.insert(0, "1357")
+        ventana._guardar()
+        b.update()
+        self.assertFalse(b.bloqueada)
+        self.assertTrue(self.mod["pin_correcto"](self.mod["ruta_pin"](self.carpeta, perfil), "1357"))
+
+    def test_si_olvida_el_pin_lo_reemplaza_entrando_con_webclass(self):
+        import configurar
+        self._compartido()
+        b, perfil = self.barra, self.mod["PERFIL"]
+        ruta = self.mod["ruta_pin"](self.carpeta, perfil)
+        self.mod["guardar_pin"](ruta, "2468")
+        if not self.mod["leer_json"](os.path.join(self.mod["rutas"].PERFILES, f"{perfil}.json")).get("rut"):
+            self.skipTest("el perfil activo de este equipo no tiene RUT")
+        b.bloquear()
+        b.pedir_pin()
+        ventana = self._ventana_pin()
+        ventana._paso_webclass("Entra con tu contraseña de Webclass y crea un PIN nuevo.")
+        with mock.patch.object(configurar, "verificar_contrasena", side_effect=ValueError("Esa no es tu contraseña de Webclass.")):
+            ventana.contrasena.set("mala")
+            ventana._revisar_webclass()
+            self._esperar_que(lambda: "no es tu contraseña" in ventana.aviso.cget("text"))
+        self.assertFalse(hasattr(ventana, "nuevo"), "con la contraseña equivocada no se crea otro PIN")
+        with mock.patch.object(configurar, "verificar_contrasena"):
+            ventana.contrasena.set("buena")
+            ventana._revisar_webclass()
+            self._esperar_que(lambda: hasattr(ventana, "nuevo"))
+        ventana.nuevo.insert(0, "9753")
+        ventana.repetido.insert(0, "9753")
+        ventana._guardar()
+        self.assertFalse(self.mod["pin_correcto"](ruta, "2468"), "el PIN olvidado deja de servir")
+        self.assertTrue(self.mod["pin_correcto"](ruta, "9753"))
+        self.assertFalse(b.bloqueada)
+
+    def test_cambiar_de_profesor_pide_el_pin_del_otro(self):
+        import tempfile
+        self._compartido()
+        perfiles = tempfile.mkdtemp()
+        with open(os.path.join(perfiles, "otra.json"), "w", encoding="utf-8") as f:
+            json.dump({"nombre": "Otra Profesora", "rut": "11111111-1"}, f)
+        self.mod["guardar_pin"](self.mod["ruta_pin"](self.carpeta, "otra"), "8642")
+        cambios = []
+        with mock.patch.object(self.mod["rutas"], "PERFILES", perfiles), \
+                mock.patch.dict(self.mod, {"elegir_docente": lambda clave, barra=None: cambios.append(clave)}):
+            self.mod["entrar_como_docente"]("otra", self.barra)
+            ventana = self._ventana_pin()
+            self.assertEqual(ventana.etiqueta_titulo.cget("text"), "Otra Profesora")
+            self.assertEqual(cambios, [], "sin el PIN no se cambia")
+            ventana.campo.insert(0, "8642")
+            ventana._revisar_pin()
+        self.assertEqual(cambios, ["otra"])
+
+    def test_la_x_ofrece_bloquear_al_irse(self):
+        self._compartido()
+        ventana = self.mod["VentanaCerrar"](self.barra)
+        self.barra.update()
+        self.assertIn("Bloquear y esconder", self._textos(ventana))
+        ventana._bloquear()
+        self.assertTrue(self.barra.bloqueada)
+        self.assertFalse(self.barra.desplegada)
+        self.barra.fijada = True
+        self.barra._desplegar(tomar_foco=False)
+
+    def test_el_horario_muestra_la_asignatura_de_cada_bloque(self):
+        ruta = self._horario_semana([
+            {"dia": 0, "inicio": "08:00", "fin": "09:30", "curso": "5BA", "asignatura": "Ciencias Naturales"},
+            {"dia": 1, "inicio": "08:00", "fin": "09:30", "curso": "5BA", "asignatura": "Orientación"},
+            {"dia": 2, "inicio": "10:00", "fin": "11:30", "curso": "6BB", "asignatura": "Música"}])
+        with mock.patch.dict(self.mod, {"HORARIO_SEMANA": ruta}):
+            ventana = self.mod["VentanaHorario"](self.barra)
+            self.barra.update()
+            textos = self._textos(ventana)
+            ventana.destroy()
+        for esperado in ("5BA\nCiencias", "5BA\nOrientación", "6BB\nMúsica"):
+            self.assertIn(esperado, textos)
+
+    def test_mis_registros_abre_en_la_pestana_del_boton_y_filtra(self):
+        archivos = {
+            "Libro": "fecha_clase;curso;hora;asignatura;clase;estado;firma\n01/10/2026;5BA;08:00;Ciencias;Clase 1;declarado;firmado\n"
+                     "02/10/2026;5BB;08:00;Ciencias;;PENDIENTE: sin clase;sin firmar\n03/10/2026;5BA;08:00;Ciencias;Clase 3;declarado;\n",
+            "Subidas": "fecha;archivo;carpeta;id_recurso;estado;docente\n01/10/2026 10:00;a.pdf;5 basico;1;subido;Ana Pérez\n"
+                       "02/10/2026 10:00;b.pdf;5 basico;2;subido;Otra Persona\n03/10/2026 10:00;c.pdf;6 basico;3;subido;\n",
+            "Tareas": "fecha_asignacion,unidad,idunidad,curso,idclase,clase,fecha_clase,alumnas_asignadas\n",
+        }
+        rutas_csv = {}
+        for tipo, texto in archivos.items():
+            rutas_csv[tipo] = os.path.join(self.carpeta, f"{tipo}.csv")
+            with open(rutas_csv[tipo], "w", encoding="utf-8-sig", newline="") as f:
+                f.write(texto)
+        with mock.patch.dict(self.mod, {"ruta_de_registro": rutas_csv.__getitem__, "NOMBRE_COMPLETO": "Ana Pérez"}), \
+                mock.patch.object(self.mod["os"], "startfile", create=True) as abrir_archivo:
+            self.mod["abrir"]({"nombre": "Registro de subidas", "tipo": "programa",
+                               "destino": "%BUZON%\\registro_subidas.csv"}, self.barra)
+            self.barra.update()
+            ventana = [w for w in self.barra.winfo_children() if isinstance(w, self.mod["VentanaRegistros"])][0]
+            self.assertEqual(ventana.pestanas.actual, "Subidas", "el botón de siempre abre su pestaña")
+            ventana._elegir_periodo("todo")
+            self.assertEqual(len(ventana.tabla.get_children()), 2, "la subida de otro docente del PC no se ve")
+            ventana.pestanas.elegir("Libro")
+            self.assertEqual(len(ventana.tabla.get_children()), 3)
+            ventana._filtrar("curso", "5BA")
+            self.assertEqual(len(ventana.tabla.get_children()), 2)
+            ventana._filtrar("estado", "pendiente")
+            self.assertEqual(len(ventana.tabla.get_children()), 0)
+            ventana.pestanas.elegir("Tareas")
+            self.assertIn("Todavía no hay nada anotado", ventana.resumen.cget("text"))
+            abrir_archivo.assert_not_called()
+            ventana.pestanas.elegir("Libro")
+            ventana._abrir_excel()
+            abrir_archivo.assert_called_once_with(rutas_csv["Libro"])
+            ventana.destroy()
+
+    def test_el_aviso_dura_lo_elegido(self):
+        capturado = {}
+        self.barra.preferencias = {"aviso_segundos": 10}
+        with mock.patch.dict(self.mod, {"Aviso": lambda *a, **k: capturado.update(k)}):
+            self.barra._avisar(mock.Mock(titulo="Asignar clases"), "completado", {"resumen": "listo"})
+        self.assertEqual(capturado["segundos"], 10)
 
     def _nodo_de_prueba(self):
         """Un nodo SIN iniciar (no abre puertos): solo su historial, para probar la interfaz."""
@@ -256,15 +969,36 @@ class VentanaBarra(unittest.TestCase):
             a.destroy()
         self.barra.mensajeria = None
 
-    def test_la_x_cierra_la_barra(self):
+    def _pedir_cierre(self):
         self.barra.boton_cerrar.event_generate("<ButtonPress-1>", x=3, y=3)
+        self.barra.update()
+        dialogos = [w for w in self.barra.winfo_children() if isinstance(w, self.mod["VentanaCerrar"])]
+        self.assertEqual(len(dialogos), 1, "la ✕ pregunta antes")
+        return dialogos[0]
+
+    def test_la_x_pregunta_y_cerrar_cierra_la_barra(self):
+        self._pedir_cierre()._cerrar()
         with self.assertRaises(tk.TclError):        # ventana destruida
             self.barra.winfo_exists()
 
-    def test_la_rueda_desplaza_si_no_cabe(self):
+    def test_la_x_puede_solo_esconderla(self):
+        self._pedir_cierre()._esconder()
+        self.assertTrue(self.barra.winfo_exists())
+        self.assertFalse(self.barra.desplegada)
+
+    def _abrir_todos_los_grupos(self):
+        """Con todo abierto la barra pasa del alto de la pantalla: sirve para probar el desplazamiento."""
         b = self.barra
+        for grupo, info in list(b.grupos_ui.items()):
+            if not info["abierto"]:
+                b.alternar_grupo(grupo)
+        b.update()
         if not b.con_scroll:
             self.skipTest("en esta pantalla la barra cabe entera")
+
+    def test_la_rueda_desplaza_si_no_cabe(self):
+        b = self.barra
+        self._abrir_todos_los_grupos()
         self.assertEqual(b.desplazamiento, 0)
         b.panel.event_generate("<MouseWheel>", delta=-120)
         b.update()
@@ -275,10 +1009,9 @@ class VentanaBarra(unittest.TestCase):
 
     def test_la_barrita_llega_al_final_y_vuelve(self):
         b = self.barra
-        if not b.con_scroll:
-            self.skipTest("en esta pantalla la barra cabe entera")
-        b._arrastrar_indicador(type("Evento", (), {"y": b.alto})())
-        self.assertEqual(b.desplazamiento, b.alto_contenido - b.alto)
+        self._abrir_todos_los_grupos()
+        b._arrastrar_indicador(type("Evento", (), {"y": b.alto_area})())
+        self.assertEqual(b.desplazamiento, b.alto_contenido - b.alto_area)
         b._desplazar(-10 ** 6)
         self.assertEqual(b.desplazamiento, 0)
 
@@ -1047,9 +1780,12 @@ class VentanaBarra(unittest.TestCase):
                                                     "icono": "⏪"})
         self.barra.update()
         self.assertIn("días hábil", v.rango.cget("text"))             # por defecto: últimos 7 días
+        import datetime
         v.atajo.set("ayer")
         v._actualizar()
-        self.assertRegex(v.rango.cget("text"), r"el \d\d/\d\d/\d{4} \(1 día hábil\)")
+        ayer_habil = (datetime.date.today() - datetime.timedelta(days=1)).weekday() < 5   # un lunes, ayer fue domingo
+        self.assertRegex(v.rango.cget("text"),
+                         r"el \d\d/\d\d/\d{4} \(1 día hábil\)" if ayer_habil else r"el \d\d/\d\d/\d{4} \(0 días hábiles\)")
         v.atajo.set("fecha")
         v.texto_fecha.set("31/02/2026")
         v._actualizar()
@@ -1132,6 +1868,25 @@ class VentanaBarra(unittest.TestCase):
             self.assertEqual(json.load(f), {"claves": ["4BA|12:50-00:00|802|2026-10-06"],
                                             "elecciones": {"4BA|12:50-00:00|802|2026-10-06": "c19"}})
         nuevas[0].destroy()
+        c.destroy()
+
+    def test_elegir_la_clase_ofrece_no_hubo_clase_y_no_vuelve_a_correr(self):
+        guion = self.GUION_SIN_CLASE.replace(
+            "'opciones':", "'sin_clase': {'campo': 'bloques', 'clave': '4BA|12:50-00:00|802|2026-10-06',"
+                           " 'dia': '2026-10-06', 'titulo': '06/10 4BA 12:50'}, 'opciones':")
+        c = self._correr(guion, titulo="Registrar libro")
+        elegir = self.mod["VentanaElegirClase"](c)
+        self.barra.update()
+        combo = elegir.combos["4BA|12:50-00:00|802|2026-10-06"]
+        self.assertEqual(list(combo["values"])[-1], elegir.NO_HUBO)
+        combo.current(len(combo["values"]) - 1)
+        antes = [w for w in self.barra.winfo_children() if isinstance(w, self.mod["Consola"])]
+        elegir._declarar()
+        self.assertFalse(elegir.winfo_exists())
+        self.assertEqual(antes, [w for w in self.barra.winfo_children() if isinstance(w, self.mod["Consola"])],
+                         "no hay nada que declarar: no vuelve a correr")
+        self.assertEqual(self.mod["leer_sin_clases"](self.mod["SIN_CLASES"])["bloques"],
+                         {"4BA|12:50-00:00|802|2026-10-06": "06/10 4BA 12:50"})
         c.destroy()
 
     def test_destinos_volver_al_por_defecto(self):
@@ -1228,6 +1983,263 @@ class VentanaBarra(unittest.TestCase):
         b.update()
         self.assertFalse(b.desplegada)
         self.assertTrue(b.winfo_exists())
+
+    # ------------------------------------------------------------ buzón del colegio
+    CODIGO = "ABCDEFGHJKLMNPQRSTUV"
+
+    def _buzon(self, mensajes=(), claves=None):
+        col = self.mod["colegio"]
+        col.guardar_paquete(self.mod["BUZON_COLEGIO"],
+                            col.cerrar(self.CODIGO, {"claves": claves or {}, "mensajes": list(mensajes)}))
+
+    def test_los_avisos_del_colegio_se_ven_arriba_avisan_una_vez_y_se_marcan_listos(self):
+        import datetime
+        col, b = self.mod["colegio"], self.barra
+        hoy = datetime.date.today()
+        mensajes = [col.nuevo_mensaje("mensaje", "Reunión de ciclo a las 16:00", de="Bastián"),
+                    col.nuevo_mensaje("aviso", "Hoy hay consejo de profesores", fecha=hoy),
+                    col.nuevo_mensaje("aviso", "Mañana no", fecha=hoy + datetime.timedelta(days=1)),
+                    col.nuevo_mensaje("mensaje", "Para otra persona", "Nadie Inexistente Xyz")]
+        self._buzon(mensajes)
+        self.codigo_colegio = self.CODIGO
+        avisos = []
+        with mock.patch.dict(self.mod, {"Aviso": lambda barra, estado, titulo, detalle, **k: avisos.append(titulo)}):
+            b.refrescar_avisos()
+            b.refrescar_avisos()                              # lo ya avisado no vuelve a saltar
+        texto = self._textos(b.tarjeta_avisos)
+        self.assertIn("📣 AVISOS · 2", texto)
+        self.assertIn("Reunión de ciclo a las 16:00", texto)
+        self.assertIn("Mensaje de Bastián", texto)
+        self.assertIn("Hoy hay consejo de profesores", texto)
+        self.assertNotIn("Mañana no", texto)
+        self.assertNotIn("Para otra persona", texto)
+        self.assertEqual(avisos, ["2 avisos nuevos del colegio"])
+        ordenados = b.panel.pack_slaves()
+        self.assertLess(ordenados.index(b.tarjeta_avisos), ordenados.index(b.tarjeta_hoy), "van arriba de «Hoy»")
+        b.marcar_aviso_leido(mensajes[0]["id"])
+        self.assertIn("📣 AVISOS · 1", self._textos(b.tarjeta_avisos))
+        b.marcar_aviso_leido(mensajes[1]["id"])
+        self.assertFalse(b.tarjeta_avisos.winfo_manager(), "sin avisos no ocupa lugar")
+
+    def test_sin_la_clave_del_colegio_se_ve_lo_general_y_no_lo_dirigido(self):
+        import datetime
+        col, b = self.mod["colegio"], self.barra
+        nombre = self.mod["NOMBRE_COMPLETO"]
+        if not nombre:
+            self.skipTest("este PC no tiene un profesor configurado")
+        self._buzon([col.nuevo_mensaje("aviso", "Consejo para todos", fecha=datetime.date.today()),
+                     col.nuevo_mensaje("mensaje", "Solo para ti", nombre)])
+        with mock.patch.dict(self.mod, {"Aviso": lambda *a, **k: None}):
+            b.refrescar_avisos()
+            texto = self._textos(b.tarjeta_avisos)
+            self.assertIn("Consejo para todos", texto)
+            self.assertNotIn("Solo para ti", texto, "lo dirigido necesita la clave del colegio")
+            self.codigo_colegio = self.CODIGO
+            b.refrescar_avisos()
+        self.assertIn("Solo para ti", self._textos(b.tarjeta_avisos))
+
+    def test_la_clave_del_colegio_se_revisa_antes_de_guardarla(self):
+        self._buzon()
+        ajustes = self._ajustes("Profesor")
+        self.assertIn("Clave del colegio", self._textos(ajustes))
+        ajustes.destroy()
+        v = self.mod["VentanaClaveColegio"](self.barra)
+        self.barra.update()
+        self.assertIn("todavía no tiene la clave del colegio", v.aviso.cget("text"))
+        v.texto.set("abc")
+        v._guardar()
+        self.assertIn("20 letras y números", v.aviso.cget("text"))
+        v.texto.set("ZZZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZ")
+        v._guardar()
+        self._esperar(lambda: "no abre" in v.aviso.cget("text"))
+        self.assertEqual(self.codigo_colegio, "", "una clave que no abre no se guarda")
+        v.texto.set("abcd efgh jklm npqr stuv")
+        v._guardar()
+        self._esperar(lambda: "Guardada" in v.aviso.cget("text"))
+        self.assertEqual(self.codigo_colegio, self.CODIGO)
+        v.destroy()
+
+    def test_el_administrador_publica_mensajes_y_claves_cifrados(self):
+        import datetime
+        col, b = self.mod["colegio"], self.barra
+        self.assertNotIn("Administrador", self._ajustes().pestanas.pestanas, "solo en el PC que puede publicar")
+        for w in b.winfo_children():
+            if isinstance(w, self.mod["VentanaAjustes"]):
+                w.destroy()
+        b.es_admin = True
+        ajustes = self._ajustes("Administrador")
+        self.assertIn("Crear la clave del colegio", self._textos(ajustes))
+        self.codigo_colegio = self.CODIGO
+        ajustes.pestanas.elegir("Administrador")
+        self.assertIn("ABCD-EFGH-JKLM-NPQR-STUV", self._textos(ajustes))
+        ajustes.destroy()
+
+        v = self.mod["VentanaAdministrador"](b, "Mensajes")
+        self._esperar(lambda: "Trayendo" not in v.aviso.cget("text"))
+        v.campo_texto.insert("1.0", "Recuerden firmar el libro")
+        v._publicar_mensaje()
+        self._esperar(lambda: self.publicados)
+        self._esperar(lambda: "publicado para todos" in v.aviso.cget("text"))
+        contenido = col.abrir(self.publicados[-1], self.CODIGO)
+        self.assertEqual([(m["tipo"], m["para"], m["texto"]) for m in contenido["mensajes"]],
+                         [("mensaje", "*", "Recuerden firmar el libro")])
+        self.assertEqual(col.leer_paquete(self.mod["BUZON_COLEGIO"]), self.publicados[-1], "este PC lo ve al tiro")
+        self.assertIn("PUBLICADOS · 1", self._textos(v))
+
+        v._elegir_tipo("aviso")
+        v.fecha.set((datetime.date.today() - datetime.timedelta(days=1)).strftime("%d/%m/%Y"))
+        v.campo_texto.insert("1.0", "Atrasado")
+        v._publicar_mensaje()
+        self.assertIn("ya pasó", v.aviso.cget("text"))
+
+        v.pestanas.elegir("Claves de IA")
+        v.campos_claves["GEMINI_API_KEY"].insert(0, "AIza-clave-del-colegio-9876")
+        v._publicar_claves()
+        self._esperar(lambda: "claves de IA del colegio quedaron publicadas" in v.aviso.cget("text"))
+        self.assertEqual(col.abrir(self.publicados[-1], self.CODIGO)["claves"],
+                         {"GEMINI_API_KEY": "AIza-clave-del-colegio-9876"})
+        self.assertIn("publicada …9876", self._textos(v))
+        self.assertNotIn("AIza-clave-del-colegio", json.dumps(self.publicados[-1]), "viaja cifrada")
+        v.destroy()
+
+    # ------------------------------------------------------------ días sin clases
+    def _estado_con_pendientes(self):
+        """Hoy, dos bloques sin completar (5BA y 6BB); el lunes 12/10, dos bloques atrasados."""
+        import datetime
+        hoy = datetime.date.today()
+        bloques = [{"curso": "5BA", "id": 701, "hora": "08:00-09:30", "asignatura": "Ciencias", "oa": False,
+                    "leccionario": False, "asistencia": True, "firma": False},
+                   {"curso": "6BB", "id": 702, "hora": "10:00-11:30", "asignatura": "Ciencias", "oa": False,
+                    "leccionario": True, "asistencia": True, "firma": False}]
+        estado = {"fecha": hoy.strftime("%d/%m/%Y"), "revisado": f"{hoy:%d/%m/%Y} 10:00", "bloques": bloques,
+                  "sin_firmar": bloques, "sin_registro": bloques,
+                  "atrasados": [{"fecha": "12/10/2026", "bloques": 2, "cursos": ["5BA", "6BB"],
+                                 "claves": ["5BA|08:00-09:30|1|2026-10-12", "6BB|10:00-11:30|2|2026-10-12"]}]}
+        ruta = os.path.join(self.carpeta, "estado_firmas.json")
+        with open(ruta, "w", encoding="utf-8") as f:
+            json.dump(estado, f)
+        self.mod["ESTADO_FIRMAS"] = ruta
+        return hoy
+
+    def _sin_clases(self):
+        return self.mod["leer_sin_clases"](self.mod["SIN_CLASES"])
+
+    def test_la_lista_saca_una_fila_y_el_titulo_de_su_grupo_si_queda_vacio(self):
+        lista = self.mod["ListaMarcable"](self.barra)
+        avisos = []
+        lista.al_cambiar = lambda marcadas, total: avisos.append((marcadas, total))
+        for clave, grupo in (("a", "lun 12/10"), ("b", "lun 12/10"), ("c", "mar 13/10")):
+            lista.agregar(clave, clave.upper(), grupo=grupo, accion=("No hubo clase ▾", lambda _e: None))
+        self.assertIn("No hubo clase ▾", self._textos(lista))
+        lista.quitar("c")
+        self.assertEqual(lista.todas(), ["a", "b"])
+        self.assertEqual(avisos[-1], (["a", "b"], 2))
+        self.assertNotIn("MAR 13/10", self._textos(lista))
+        lista.quitar("a")
+        self.assertIn("LUN 12/10", self._textos(lista), "el grupo sigue mientras le quede una fila")
+        lista.quitar("no existe")
+        self.assertEqual(lista.todas(), ["b"])
+        lista.destroy()
+
+    def test_vista_previa_del_libro_deja_marcar_un_bloque_sin_clase(self):
+        hoy = self._estado_con_pendientes()
+        lanzado = []
+        previa = self.mod["VistaPrevia"](self.barra, {"nombre": "Registrar libro", "vista_previa": "libro"},
+                                         lambda *a: lanzado.append(a))
+        self.barra.update()
+        self.assertEqual(self._textos(previa).count("No hubo clase ▾"), 2)
+        previa._marcar_sin_clase(previa._items_lista[0], todo_el_dia=False)
+        self.barra.update()
+        self.assertEqual(list(self._sin_clases()["bloques"]), [f"5BA|08:00-09:30|701|{hoy.isoformat()}"])
+        self.assertEqual(previa.lista.todas(), ["6BB|10:00-11:30|702"])
+        self.assertIn("queda como clase que no se hizo", previa.aviso.cget("text"))
+        self.assertIn("1 de 1 marcadas", self._textos(previa))
+        self.assertNotIn("5BA", self.barra.libro_texto.cget("text"), "la tarjeta «Hoy» deja de contarlo al tiro")
+        previa._continuar()
+        self.assertEqual(lanzado, [(["6BB|10:00-11:30|702"], ["6BB|10:00-11:30|702"])])
+
+    def test_vista_previa_marca_el_dia_entero_y_si_no_queda_nada_lo_dice(self):
+        previa = self.mod["VistaPrevia"](self.barra, {"nombre": "Registrar libro pendiente"}, lambda *a: None)
+
+        def item(clave, dia):
+            return {"clave": clave, "titulo": clave, "grupo": dia, "detalle": "",
+                    "sin_clase": {"campo": "bloques", "clave": clave, "dia": dia, "titulo": clave}}
+        items = [item("a|2026-10-12", "2026-10-12"), item("b|2026-10-12", "2026-10-12"),
+                 item("c|2026-10-13", "2026-10-13")]
+        previa._mostrar({"titulo": "x", "puntos": [], "items": items, "hay_trabajo": True, "aviso": ""})
+        previa._marcar_sin_clase(items[0], todo_el_dia=True)
+        self.assertEqual(previa.lista.todas(), ["c|2026-10-13"], "se van todos los bloques de ese día")
+        self.assertEqual(self._sin_clases()["dias"], {"2026-10-12": ""})
+        self.assertIn("lunes 12/10 queda como día sin clases", previa.aviso.cget("text"))
+        previa._marcar_sin_clase(items[2], todo_el_dia=False)
+        self.assertIsNone(previa.lista)
+        self.assertIn("Ya no queda nada por hacer", self._textos(previa))
+        previa.destroy()
+
+    def test_la_tarjeta_hoy_no_cuenta_lo_marcado_sin_clases(self):
+        hoy = self._estado_con_pendientes()
+        b = self.barra
+        b._refrescar_firmas()
+        if not b.hoy_abierta:
+            b.alternar_hoy()
+        self.assertIn("2 sin firmar", b.libro_texto.cget("text"))
+        self.assertIn("2 bloques de días anteriores", b.libro_texto.cget("text"))
+        self.assertTrue(b.sin_clases_enlace.winfo_manager(), "abierta, ofrece marcar feriados")
+        with open(self.mod["SIN_CLASES"], "w", encoding="utf-8") as f:
+            json.dump({"dias": {"2026-10-12": "Feriado", hoy.isoformat(): "Salida"}}, f)
+        b._refrescar_firmas()
+        self.assertEqual(b.libro_texto.cget("text"), "Hoy: sin clases (lo marcaste)")
+        self.assertFalse(b.sin_clases_enlace.winfo_manager(), "sin pendientes no hace falta")
+        b.alternar_hoy()
+
+    def test_dias_sin_clases_marca_un_dia_pendiente_y_un_rango_y_se_deshace(self):
+        self._estado_con_pendientes()
+        self.mod["abrir"]({"nombre": "Días sin clases", "tipo": "sin-clases", "destino": ""}, self.barra)
+        self.barra.update()
+        v = [w for w in self.barra.winfo_children() if isinstance(w, self.mod["VentanaSinClases"])][0]
+        texto = self._textos(v)
+        self.assertIn("lun 12/10 · 2 bloques sin registrar (5BA, 6BB)", texto)
+        self.assertIn("Todavía no marcas ningún día.", texto)
+        v._marcar()
+        self.assertIn("Marca un día de la lista", v.aviso.cget("text"))
+        v.elegidos["2026-10-12"].set(True)
+        v.desde.set("20/07/2026")
+        v.hasta.set("24/07/2026")
+        v.motivo.set("Vacaciones")
+        v._marcar()
+        self.barra.update()
+        self.assertEqual(len(self._sin_clases()["dias"]), 6)
+        texto = self._textos(v)
+        self.assertIn("lun 20/07 al vie 24/07/2026 (5 días) · Vacaciones", texto)
+        self.assertNotIn("bloques sin registrar", texto, "lo marcado ya no se ofrece")
+        self.assertNotIn("días anteriores", self.barra.libro_texto.cget("text"))
+        quitar = [w for w in v.marcados.interior.winfo_children()[1].winfo_children() if w.cget("text") == "Quitar"]
+        quitar[0].event_generate("<Button-1>")             # la segunda fila: las vacaciones de julio
+        self.barra.update()
+        self.assertEqual(list(self._sin_clases()["dias"]), ["2026-10-12"])
+        self.assertIn("Quitado", v.aviso.cget("text"))
+        v.desde.set("31/02")
+        v._marcar()
+        self.assertIn("no existe", v.aviso.cget("text"))
+        self.barra.abrir_sin_clases()                       # una sola ventana
+        self.assertEqual(len([w for w in self.barra.winfo_children() if isinstance(w, self.mod["VentanaSinClases"])]), 1)
+        v.destroy()
+
+    def test_dias_sin_clases_esta_en_ajustes_y_con_la_barra_bloqueada_pide_el_pin(self):
+        ajustes = self._ajustes("Profesor")
+        self.assertIn("Días sin clases", self._textos(ajustes))
+        ajustes._sin_clases()
+        self.barra.update()
+        abiertas = [w for w in self.barra.winfo_children() if isinstance(w, self.mod["VentanaSinClases"])]
+        self.assertEqual(len(abiertas), 1)
+        abiertas[0].destroy()
+        self._compartido()
+        self.mod["guardar_pin"](self.mod["ruta_pin"](self.carpeta, self.mod["PERFIL"]), "2468")
+        self.barra.bloquear()
+        self.barra.abrir_sin_clases()
+        self.barra.update()
+        self.assertFalse([w for w in self.barra.winfo_children() if isinstance(w, self.mod["VentanaSinClases"])])
+        self.assertIsNotNone(self._ventana_pin())
 
 
 if __name__ == "__main__":

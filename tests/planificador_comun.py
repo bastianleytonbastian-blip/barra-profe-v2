@@ -31,7 +31,9 @@ class BarraFalsa:
     herramienta\\VERSION. Mientras está activa, el planificador cree que vive dentro de ella.
     """
 
-    def __init__(self, activa="beto", version="2.2.0"):
+    def __init__(self, activa="beto", version="minima"):
+        if version == "minima":                                  # la que pide el planificador: así no envejece al subirla
+            version = importar("nucleo.version").BARRA_MINIMA
         self.carpeta = tempfile.mkdtemp(prefix="BarraFalsa_")
         os.makedirs(os.path.join(self.carpeta, "personal", "perfiles"))
         os.makedirs(os.path.join(self.carpeta, "datos"))

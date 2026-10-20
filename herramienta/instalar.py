@@ -22,10 +22,12 @@ import argparse
 import getpass
 import json
 import os
+import re
 import subprocess
 import sys
 
 import rutas
+from barra_utiles import guardar_botones, leer_botones
 
 CARPETA = rutas.CODIGO        # donde están los scripts o el .exe
 PERFILES = rutas.PERFILES     # personal\perfiles\
@@ -161,11 +163,7 @@ def planificador_en_botones(personal: str | None = None) -> bool:
     if not os.path.isfile(propio):
         return False                       # sin copia propia se usa la plantilla, que ya trae el botón nuevo
     try:
-        with open(propio, "rb") as f:
-            crudo = f.read()
-        bom = crudo.startswith(b"\xef\xbb\xbf")
-        texto = crudo.decode("utf-8-sig")
-        botones = json.loads(texto)
+        botones, formato = leer_botones(propio)
     except (OSError, ValueError):
         return False
     destino = "%BARRA%\\planificador\\lanzar_planificador.pyw"
@@ -182,19 +180,13 @@ def planificador_en_botones(personal: str | None = None) -> bool:
             break
     if not cambio:
         return False
-    import shutil
-    shutil.copy2(propio, propio + ".antes-del-planificador")      # por si prefiere volver atrás
-    nuevo = json.dumps(botones, ensure_ascii=False, indent=2)
-    if b"\r\n" in crudo:
-        nuevo = nuevo.replace("\n", "\r\n")
-    with open(propio, "wb") as f:
-        f.write((b"\xef\xbb\xbf" if bom else b"") + nuevo.encode("utf-8"))
+    guardar_botones(propio, botones, formato, copia=propio + ".antes-del-planificador")   # por si prefiere volver atrás
     paso("Botón «Planificar»")
     print("   Ahora abre el asistente de IA. La ventana de antes quedó en «Planificar en bloque».")
     return True
 
 
-BOTONES_NUEVOS = ("Escala de notas",)     # botones de la plantilla que se suman a la copia personal si faltan
+BOTONES_NUEVOS = ("Escala de notas", "Días sin clases")   # de la plantilla: se suman a la copia personal si faltan
 
 
 def botones_nuevos_en_propios(personal: str | None = None) -> list[str]:
@@ -210,12 +202,8 @@ def botones_nuevos_en_propios(personal: str | None = None) -> list[str]:
     if not (os.path.isfile(propio) and os.path.isfile(plantilla)):
         return []
     try:
-        with open(propio, "rb") as f:
-            crudo = f.read()
-        bom = crudo.startswith(b"\xef\xbb\xbf")
-        botones = json.loads(crudo.decode("utf-8-sig"))
-        with open(plantilla, encoding="utf-8-sig") as f:
-            modelo = json.load(f)
+        botones, formato = leer_botones(propio)
+        modelo, _ = leer_botones(plantilla)
     except (OSError, ValueError):
         return []
     tienen = {b.get("nombre") for b in botones}
@@ -230,15 +218,7 @@ def botones_nuevos_en_propios(personal: str | None = None) -> list[str]:
         agregados.append(nombre)
     if not agregados:
         return []
-    import shutil
-    copia = propio + ".antes-de-actualizar"
-    if not os.path.exists(copia):
-        shutil.copy2(propio, copia)                               # una sola copia de seguridad, la de antes del primer cambio
-    nuevo = json.dumps(botones, ensure_ascii=False, indent=2)
-    if b"\r\n" in crudo:
-        nuevo = nuevo.replace("\n", "\r\n")
-    with open(propio, "wb") as f:
-        f.write((b"\xef\xbb\xbf" if bom else b"") + nuevo.encode("utf-8"))
+    guardar_botones(propio, botones, formato, copia=propio + ".antes-de-actualizar")   # una sola copia, la del primer cambio
     paso("Botones nuevos")
     for nombre in agregados:
         print(f"   Se agregó «{nombre}» a tu barra.")
@@ -258,29 +238,69 @@ def botones_retirados_de_propios(personal: str | None = None) -> list[str]:
     if not os.path.isfile(propio):
         return []
     try:
-        with open(propio, "rb") as f:
-            crudo = f.read()
-        bom = crudo.startswith(b"\xef\xbb\xbf")
-        botones = json.loads(crudo.decode("utf-8-sig"))
+        botones, formato = leer_botones(propio)
     except (OSError, ValueError):
         return []
     quitados = [b["nombre"] for b in botones if b.get("nombre") in BOTONES_RETIRADOS]
     if not quitados:
         return []
-    import shutil
-    copia = propio + ".antes-de-actualizar"
-    if not os.path.exists(copia):
-        shutil.copy2(propio, copia)
     botones = [b for b in botones if b.get("nombre") not in BOTONES_RETIRADOS]
-    nuevo = json.dumps(botones, ensure_ascii=False, indent=2)
-    if b"\r\n" in crudo:
-        nuevo = nuevo.replace("\n", "\r\n")
-    with open(propio, "wb") as f:
-        f.write((b"\xef\xbb\xbf" if bom else b"") + nuevo.encode("utf-8"))
+    guardar_botones(propio, botones, formato, copia=propio + ".antes-de-actualizar")
     paso("Botones retirados")
     for nombre in quitados:
         print(f"   Se quitó «{nombre}» de tu barra (la herramienta sigue en el programa).")
     return quitados
+
+
+# Arreglos de la plantilla que también llegan a la copia de cada docente: (campo, texto de antes, texto nuevo).
+# Solo se cambia lo que sigue exactamente como venía; si el docente lo editó, se respeta.
+TEXTOS_CORREGIDOS = (
+    ("nombre", "A donde asigno cada unidad", "A dónde asigno cada unidad"),
+    ("ayuda", "Pone al dia el libro de un mes completo", "Pone al día el libro de un mes completo"),
+    ("pregunta", "Recorre los dias habiles de ese mes que ya pasaron y declara OA, leccionario y asistencia donde "
+                 "falte. Tarda varios minutos y escribe en Webclass.",
+     "Recorre los días hábiles de ese mes que ya pasaron y declara OA, leccionario y asistencia donde falte. "
+     "Tarda varios minutos y escribe en Webclass."),
+    ("ayuda", "Pasa a la siguiente paleta de colores", "Elige el color de la barra (queda guardado para tu perfil)"),
+    ("ayuda", "Deja aqui un archivo llamado inicio.mp3 (o inicio.wav); borralo para silenciarla",
+     "Deja aquí un archivo llamado inicio.mp3 (o inicio.wav); bórralo para silenciarla"),
+)
+
+
+def meses_fijos(opciones) -> bool:
+    """¿Es la lista de meses escrita a mano que traía «Completar mes atrasado» (valores tipo 10/2026)?"""
+    return (isinstance(opciones, list) and bool(opciones)
+            and all(isinstance(o, dict) and re.fullmatch(r"\d{2}/\d{4}", str(o.get("valor", ""))) for o in opciones))
+
+
+def botones_corregidos_en_propios(personal: str | None = None) -> list[str]:
+    """Lleva a la copia personal de herramientas.json los arreglos de la plantilla, sin pisar lo que el docente cambió:
+    los meses de «Completar mes atrasado» pasan a calcularse solos (antes eran fijos de 2026) y los textos sin tildes o
+    desactualizados se corrigen. Devuelve los nombres de los botones que cambiaron."""
+    propio = os.path.join(personal or rutas.PERSONAL, "herramientas.json")
+    if not os.path.isfile(propio):
+        return []
+    try:
+        botones, formato = leer_botones(propio)
+    except (OSError, ValueError):
+        return []
+    cambiados = []
+    for b in botones:
+        antes = dict(b)
+        if b.get("tipo") == "preguntar" and "--mes {valor}" in str(b.get("destino", "")) and meses_fijos(b.get("opciones")):
+            b["opciones"] = "meses"
+        for campo, viejo, nuevo in TEXTOS_CORREGIDOS:
+            if b.get(campo) == viejo:
+                b[campo] = nuevo
+        if b != antes:
+            cambiados.append(b.get("nombre", "(sin nombre)"))
+    if not cambiados:
+        return []
+    guardar_botones(propio, botones, formato, copia=propio + ".antes-de-actualizar")
+    paso("Botones corregidos")
+    for nombre in cambiados:
+        print(f"   «{nombre}» quedó al día.")
+    return cambiados
 
 
 def mostrar_versiones() -> None:
@@ -524,6 +544,7 @@ def main() -> None:
     planificador_en_botones()
     botones_nuevos_en_propios()
     botones_retirados_de_propios()
+    botones_corregidos_en_propios()
     retirar_tarea_asignar()
 
     if args.actualizar:

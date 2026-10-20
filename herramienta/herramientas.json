@@ -21,7 +21,7 @@
   },
   {
     "grupo": "Webclass",
-    "nombre": "A donde asigno cada unidad",
+    "nombre": "A dónde asigno cada unidad",
     "icono": "🎯",
     "tipo": "destinos",
     "destino": "",
@@ -43,6 +43,14 @@
     "tipo": "libro-atras",
     "destino": "",
     "ayuda": "Completa lo que quedó sin registrar en días anteriores; tú eliges qué"
+  },
+  {
+    "grupo": "Webclass",
+    "nombre": "Días sin clases",
+    "icono": "📆",
+    "tipo": "sin-clases",
+    "destino": "",
+    "ayuda": "Feriados o vacaciones: márcalos para que no aparezcan como pendientes en el libro ni en las tareas"
   },
   {
     "grupo": "Webclass",
@@ -99,34 +107,9 @@
     "icono": "📚",
     "tipo": "preguntar",
     "destino": "libro --completar-mes --mes {valor}",
-    "ayuda": "Pone al dia el libro de un mes completo",
-    "pregunta": "Recorre los dias habiles de ese mes que ya pasaron y declara OA, leccionario y asistencia donde falte. Tarda varios minutos y escribe en Webclass.",
-    "opciones": [
-      {
-        "texto": "Octubre (este mes)",
-        "valor": "10/2026"
-      },
-      {
-        "texto": "Septiembre",
-        "valor": "09/2026"
-      },
-      {
-        "texto": "Agosto",
-        "valor": "08/2026"
-      },
-      {
-        "texto": "Julio",
-        "valor": "07/2026"
-      },
-      {
-        "texto": "Junio",
-        "valor": "06/2026"
-      },
-      {
-        "texto": "Mayo",
-        "valor": "05/2026"
-      }
-    ],
+    "ayuda": "Pone al día el libro de un mes completo",
+    "pregunta": "Recorre los días hábiles de ese mes que ya pasaron y declara OA, leccionario y asistencia donde falte. Tarda varios minutos y escribe en Webclass.",
+    "opciones": "meses",
     "interactivo": false
   },
   {
@@ -232,7 +215,7 @@
     "icono": "🎨",
     "tipo": "color",
     "destino": "",
-    "ayuda": "Pasa a la siguiente paleta de colores"
+    "ayuda": "Elige el color de la barra (queda guardado para tu perfil)"
   },
   {
     "grupo": "La barra",
@@ -240,6 +223,6 @@
     "icono": "🎵",
     "tipo": "carpeta",
     "destino": "%PERSONAL%",
-    "ayuda": "Deja aqui un archivo llamado inicio.mp3 (o inicio.wav); borralo para silenciarla"
+    "ayuda": "Deja aquí un archivo llamado inicio.mp3 (o inicio.wav); bórralo para silenciarla"
   }
 ]

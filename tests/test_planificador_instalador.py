@@ -67,7 +67,8 @@ class BotonesDeCadaDocente(unittest.TestCase):
         en_silencio(instalar.planificador_en_botones, personal=self.tmp)
         antes = leer_personal(self.tmp)[1]
         self.assertFalse(en_silencio(instalar.planificador_en_botones, personal=self.tmp))
-        self.assertEqual(en_silencio(instalar.botones_nuevos_en_propios, personal=self.tmp), ["Escala de notas"])
+        self.assertEqual(en_silencio(instalar.botones_nuevos_en_propios, personal=self.tmp),
+                         ["Escala de notas", "Días sin clases"])
         self.assertEqual(en_silencio(instalar.botones_nuevos_en_propios, personal=self.tmp), [])
         self.assertEqual(en_silencio(instalar.botones_retirados_de_propios, personal=self.tmp), ["Mensajes del equipo"])
         self.assertEqual(en_silencio(instalar.botones_retirados_de_propios, personal=self.tmp), [])
@@ -77,6 +78,18 @@ class BotonesDeCadaDocente(unittest.TestCase):
         en_silencio(instalar.botones_nuevos_en_propios, personal=self.tmp)
         nombres = self.nombres()
         self.assertEqual(nombres[nombres.index("Escala de notas") - 1], "Abrir y firmar")
+
+    def test_dias_sin_clases_va_despues_del_libro_pendiente(self):
+        botones = BOTONES_VIEJOS + [{"grupo": "Webclass", "nombre": "Registrar libro pendiente", "icono": "⏪",
+                                     "tipo": "libro-atras", "destino": "", "ayuda": "x"},
+                                    {"grupo": "Webclass", "nombre": "Registrar observación", "icono": "📝",
+                                     "tipo": "observacion", "destino": "", "ayuda": "x"}]
+        escribir_personal(self.tmp, botones)
+        en_silencio(instalar.botones_nuevos_en_propios, personal=self.tmp)
+        nombres = self.nombres()
+        self.assertEqual(nombres[nombres.index("Días sin clases") - 1], "Registrar libro pendiente")
+        nuevo = next(b for b in leer_personal(self.tmp)[0] if b["nombre"] == "Días sin clases")
+        self.assertEqual(nuevo["tipo"], "sin-clases")
 
     def test_un_boton_retirado_se_quita_y_los_demas_quedan_intactos(self):
         en_silencio(instalar.botones_retirados_de_propios, personal=self.tmp)
@@ -112,6 +125,74 @@ class BotonesDeCadaDocente(unittest.TestCase):
         self.assertEqual(en_silencio(instalar.botones_retirados_de_propios, personal=self.tmp), [])
         with open(os.path.join(self.tmp, "herramientas.json"), encoding="utf-8") as f:
             self.assertEqual(f.read(), "{esto no es json")
+
+
+MES_ATRASADO_VIEJO = {
+    "grupo": "Webclass", "nombre": "Completar mes atrasado", "icono": "📚", "tipo": "preguntar",
+    "destino": "libro --completar-mes --mes {valor}", "ayuda": "Pone al dia el libro de un mes completo",
+    "pregunta": "Recorre los dias habiles de ese mes que ya pasaron y declara OA, leccionario y asistencia donde falte. "
+                "Tarda varios minutos y escribe en Webclass.",
+    "opciones": [{"texto": "Octubre (este mes)", "valor": "10/2026"}, {"texto": "Septiembre", "valor": "09/2026"}],
+    "interactivo": False}
+
+
+class BotonesCorregidos(unittest.TestCase):
+    """Los arreglos de la plantilla (meses calculados, tildes) llegan a la copia de cada docente sin pisar sus cambios."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="personal_prueba_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_meses_fijos_pasan_a_calcularse_y_los_textos_se_corrigen(self):
+        botones = [dict(MES_ATRASADO_VIEJO),
+                   {"grupo": "Webclass", "nombre": "A donde asigno cada unidad", "icono": "🎯", "tipo": "destinos",
+                    "destino": "", "ayuda": "x"},
+                   {"grupo": "La barra", "nombre": "Cambiar color", "icono": "🎨", "tipo": "color", "destino": "",
+                    "ayuda": "Pasa a la siguiente paleta de colores"}]
+        escribir_personal(self.tmp, botones)
+        cambiados = en_silencio(instalar.botones_corregidos_en_propios, personal=self.tmp)
+        self.assertEqual(cambiados, ["Completar mes atrasado", "A dónde asigno cada unidad", "Cambiar color"])
+        por_nombre = {b["nombre"]: b for b in leer_personal(self.tmp)[0]}
+        mes = por_nombre["Completar mes atrasado"]
+        self.assertEqual(mes["opciones"], "meses")
+        self.assertIn("días hábiles", mes["pregunta"])
+        self.assertEqual(mes["ayuda"], "Pone al día el libro de un mes completo")
+        self.assertIn("A dónde asigno cada unidad", por_nombre)
+        self.assertIn("Elige el color", por_nombre["Cambiar color"]["ayuda"])
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "herramientas.json.antes-de-actualizar")))
+        self.assertEqual(en_silencio(instalar.botones_corregidos_en_propios, personal=self.tmp), [], "es idempotente")
+
+    def test_respeta_lo_que_el_docente_cambio(self):
+        propio = dict(MES_ATRASADO_VIEJO, ayuda="Mi ayuda", opciones=[{"texto": "Marzo", "valor": "marzo"}])
+        escribir_personal(self.tmp, [propio])
+        en_silencio(instalar.botones_corregidos_en_propios, personal=self.tmp)
+        boton = leer_personal(self.tmp)[0][0]
+        self.assertEqual(boton["ayuda"], "Mi ayuda")
+        self.assertEqual(boton["opciones"], [{"texto": "Marzo", "valor": "marzo"}], "no es la lista de meses de la plantilla")
+
+    def test_conserva_formato_y_no_toca_un_archivo_roto(self):
+        for crlf in (True, False):
+            for bom in (True, False):
+                with self.subTest(crlf=crlf, bom=bom):
+                    escribir_personal(self.tmp, [dict(MES_ATRASADO_VIEJO)], crlf=crlf, bom=bom)
+                    en_silencio(instalar.botones_corregidos_en_propios, personal=self.tmp)
+                    crudo = leer_personal(self.tmp)[1]
+                    self.assertEqual((b"\r\n" in crudo, crudo.startswith(b"\xef\xbb\xbf")), (crlf, bom))
+                    for archivo in os.listdir(self.tmp):
+                        if archivo != "herramientas.json":
+                            os.remove(os.path.join(self.tmp, archivo))
+        with open(os.path.join(self.tmp, "herramientas.json"), "w", encoding="utf-8") as f:
+            f.write("{esto no es json")
+        self.assertEqual(en_silencio(instalar.botones_corregidos_en_propios, personal=self.tmp), [])
+
+    def test_la_plantilla_ya_viene_corregida(self):
+        with open(os.path.join(comun.HERRAMIENTA, "herramientas.json"), encoding="utf-8-sig") as f:
+            plantilla = json.load(f)
+        mes = next(b for b in plantilla if b.get("nombre") == "Completar mes atrasado")
+        self.assertEqual(mes["opciones"], "meses", "sin meses escritos a mano")
+        textos = json.dumps(plantilla, ensure_ascii=False)
+        for viejo in (v for _campo, v, _nuevo in instalar.TEXTOS_CORREGIDOS):
+            self.assertNotIn(viejo, textos)
 
 
 class TareaDeLas16(unittest.TestCase):

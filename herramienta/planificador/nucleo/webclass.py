@@ -99,9 +99,26 @@ def tipo_por_archivo(nombre):
             "pptx": "Power point (Ofimática)"}.get(ext, "Documento pedagógico (Documentos)")
 
 
+def asignaturas_de_barra():
+    """Nombre -> id de las asignaturas con que la cuenta activa puede subir recursos, según Barra: las que leyó de su
+    WebClass o, si no, su tabla única ({} si el planificador está suelto o Barra es antigua)."""
+    from nucleo import barra, rutas
+    utiles = barra.modulo_de_barra(rutas.BARRA, "barra_utiles")
+    de_la_cuenta = getattr(utiles, "asignaturas_de_la_cuenta", None)
+    if de_la_cuenta is not None:
+        perfil = {"asignaturas_webclass": rutas.asignaturas_webclass_de_cuenta()}
+        return {nombre: str(codigo) for _clave, nombre, codigo in de_la_cuenta(perfil)}
+    ids = getattr(utiles, "ID_ASIGNATURA", None) or {}
+    return {nombre: str(ids[clave]) for clave, nombre in getattr(utiles, "ASIGNATURAS_SUBIDA", ()) if clave in ids}
+
+
 def asignaturas_recurso():
-    """Asignaturas de WebClass conocidas + las que el docente agregó en su perfil (nombre -> id)."""
-    return {**ASIGNATURAS_RECURSO, **_perfil.cargar().asignaturas_webclass}
+    """Asignaturas de WebClass (nombre -> id): primero las de Barra (la misma tabla con que sube la barra), luego las
+    propias de aquí que Barra no tenga, y al final las que el docente agregó en su perfil."""
+    de_barra = asignaturas_de_barra()
+    conocidas = set(de_barra.values())
+    propias = {n: i for n, i in ASIGNATURAS_RECURSO.items() if i not in conocidas}
+    return {**de_barra, **propias, **_perfil.cargar().asignaturas_webclass}
 
 
 def datos_recurso(nombre, autor, niveles, asignatura, visible, tipo, archivo_bytes, archivo_nombre, mime):

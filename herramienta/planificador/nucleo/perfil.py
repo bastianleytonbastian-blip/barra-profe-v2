@@ -34,6 +34,13 @@ class Perfil:
     ruta_logo: str = ""                                # nombre del archivo del logo, dentro de la carpeta personal (opcional)
     asignaturas_webclass: dict = field(default_factory=dict)  # {nombre: id} extra del select de asignatura de WebClass
     ruta_barra: str = ""                               # carpeta de «Barra Profe v2» (solo si el planificador está suelto)
+    # Preferencias de la pantalla (Mi perfil → Preferencias)
+    tema: str = "sistema"                              # sistema | claro | oscuro
+    color_barra: bool = True                           # usar el color que el docente eligió en la barra
+    asignatura_defecto: str = ""                       # con qué asignatura parte «Planificar una clase»
+    curso_defecto: str = ""
+    hora_defecto: str = "08:00"                        # hora de inicio con que se crean las clases en WebClass
+    plantillas: list = field(default_factory=list)     # indicaciones reutilizables: [{"nombre", "texto"}]
 
     @property
     def completo(self):
@@ -55,15 +62,25 @@ def _ruta_perfil():
     return os.path.join(rutas.personal_usuario(), "perfil.json")
 
 
+TEMAS = ("sistema", "claro", "oscuro")
+
+
 def cargar():
-    """Perfil de la cuenta activa. Si todavía no tiene uno, parte con el nombre que tiene esa cuenta en Barra."""
+    """Perfil de la cuenta activa.
+
+    Dentro de Barra, el nombre del docente es siempre el de su cuenta de Barra (un solo nombre para las dos apps);
+    suelto, el que se escribió en «Mi perfil».
+    """
     try:
         with open(_ruta_perfil(), encoding="utf-8") as f:
             perfil = Perfil(**_sanear(json.load(f)))
     except Exception:
         perfil = Perfil()
-    if not perfil.nombre_docente.strip():
-        perfil.nombre_docente = rutas.nombre_de_cuenta()
+    nombre_barra = rutas.nombre_de_cuenta()
+    if nombre_barra:
+        perfil.nombre_docente = nombre_barra
+    if perfil.tema not in TEMAS:
+        perfil.tema = "sistema"
     return perfil
 
 
