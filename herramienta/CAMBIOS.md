@@ -16,6 +16,14 @@ Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: fu
   Windows) para recibir los mensajes dirigidos y las claves de IA. Antes de guardarla se revisa que abra lo publicado.
 - ⚙ Ajustes → Administrador (solo en el PC con GitHub CLI y permiso en el repositorio): crear y copiar la clave del
   colegio, publicar y quitar mensajes y avisos, y publicar las claves de IA.
+- Si vienes de la 2.5.4, esta versión también trae (detalle en las secciones de abajo):
+  - **PIN de 4 números** en los equipos con varios profesores: la barra parte bloqueada. Si no tienes PIN o lo
+    olvidaste, entras con tu contraseña de WebClass y creas uno.
+  - **Días sin clases** (feriados, vacaciones): «No hubo clase ▾» en la vista previa y el botón «Días sin clases».
+  - La barra cabe en una pantalla: tarjeta «Hoy» plegable, botones en grupos con ★ Favoritos y ⚙ Ajustes para todo
+    (colores, letra, botones, profesor, respaldo), sin tocar archivos.
+  - «Ahora / Luego» desde Mi horario de WebClass, «Mis registros» con filtros y planificador más rápido, con historial
+    y envío en 3 pasos.
 
 ## 2.10.0
 - Días sin clases (feriados, salidas, vacaciones): lo que marques deja de aparecer como pendiente.
