@@ -208,5 +208,37 @@ class Publicar(unittest.TestCase):
         self.assertTrue(publicar.notas_de(version), "CAMBIOS.md debe tener la sección de la versión actual")
 
 
+class PasosPosteriores(unittest.TestCase):
+    """Después de instalar el paquete: complementos y botones. Un pip que falla no puede dejar los botones sin arreglar."""
+
+    def _correr(self, falla_pip: bool):
+        from types import SimpleNamespace as N
+        from unittest import mock
+        corridas = []
+
+        def run(orden, **_k):
+            corridas.append(orden)
+            es_pip = "pip" in orden
+            return N(returncode=1 if (es_pip and falla_pip) else 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "planificador"))
+            open(os.path.join(tmp, "planificador", "requirements.txt"), "w").close()
+            with mock.patch.object(act.subprocess, "run", run):
+                avisos = act.pasos_posteriores(tmp)
+        return corridas, avisos
+
+    def test_si_pip_falla_igual_se_arreglan_los_botones(self):
+        corridas, avisos = self._correr(falla_pip=True)
+        self.assertTrue(corridas[-1][-2].endswith("instalar.py") and corridas[-1][-1] == "--actualizar",
+                        "instalar.py --actualizar corre siempre, al final")
+        self.assertEqual(len(corridas), 3)
+        self.assertEqual(len(avisos), 1)
+        self.assertIn("ACTUALIZAR.bat", avisos[0])
+
+    def test_si_todo_sale_bien_no_hay_avisos(self):
+        corridas, avisos = self._correr(falla_pip=False)
+        self.assertEqual((len(corridas), avisos), (3, []))
+
+
 if __name__ == "__main__":
     unittest.main()

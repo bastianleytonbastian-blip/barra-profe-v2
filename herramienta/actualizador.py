@@ -207,15 +207,18 @@ def pasos_posteriores(carpeta_herramienta: str) -> list[str]:
     if os.path.isfile(req):
         comandos.append([py, "-m", "pip", "install", "--quiet", "-r", req])
     comandos.append([py, os.path.join(carpeta_herramienta, "instalar.py"), "--actualizar"])
+    # Todos los pasos corren aunque uno falle: antes, si pip fallaba (sin internet, red del colegio), nunca se llegaba a
+    # instalar.py y los botones nuevos —como «Planificar»— no aparecían.
+    fallo = False
     for c in comandos:
         try:
             r = subprocess.run(c, cwd=carpeta_herramienta, capture_output=True, timeout=600, creationflags=sin_ventana)
-            if r.returncode != 0:
-                avisos.append("Un paso posterior no terminó bien; ejecuta ACTUALIZAR.bat para completarlo.")
-                break
+            fallo = fallo or r.returncode != 0
         except (OSError, subprocess.SubprocessError):
-            avisos.append("No pude correr los pasos finales; ejecuta ACTUALIZAR.bat para completarlos.")
-            break
+            fallo = True
+    if fallo:
+        avisos.append("Un paso posterior no terminó bien (¿complementos sin internet?); ejecuta ACTUALIZAR.bat para "
+                      "completarlo.")
     return avisos
 
 

@@ -3,6 +3,15 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: función nueva · PARCHE: arreglo).
 
+## 2.11.2
+- Arreglo: a algunos profes no les aparecía «Planificar». Pasaba si su lista de botones nunca lo tuvo (solo se
+  convertía uno que ya existiera) o si la actualización no pudo instalar los complementos (pip sin internet en la red
+  del colegio), porque entonces no se llegaba a arreglar los botones. Ahora:
+  - la barra, al abrirse, suma los botones de fábrica que falten («Planificar», «Planificar en bloque», «Días sin
+    clases»…); lo que el profe ocultó sigue oculto;
+  - un error de pip ya no impide arreglar los botones, ni en la actualización en línea ni en ACTUALIZAR.bat.
+- Trae el planificador 1.5.1: si faltan complementos, lo dice al tiro y ofrece instalarlos.
+
 ## 2.11.1
 - Los avisos del colegio llegan más rápido: la barra revisa el buzón cada 3 minutos (antes, cada 20).
 - Publicar ya no está en la barra (se quita ⚙ Ajustes → Administrador). El administrador usa una mini aplicación aparte,

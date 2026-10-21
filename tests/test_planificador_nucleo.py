@@ -456,6 +456,26 @@ class Lanzador(unittest.TestCase):
         _, abrir, _ = self._main(self._cargar(), ["lanzar", "guia-pie"], (8501, True))
         abrir.assert_called_once_with("http://127.0.0.1:8501/#/guia-pie")
 
+    def test_si_faltan_complementos_lo_dice_en_vez_de_esperar_un_minuto(self):
+        lz = self._cargar()
+        with mock.patch.object(lz, "complementos_faltantes", return_value=["fastapi"]), \
+                mock.patch.object(lz, "ofrecer_instalar") as ofrecer:
+            iniciar, abrir, aviso = self._main(lz, ["lanzar", "planificar"], (8502, False))
+            ofrecer.assert_called_once_with(["fastapi"])
+            iniciar.assert_not_called()
+            abrir.assert_not_called()
+            iniciar, _, _ = self._main(lz, ["lanzar", "--solo-servidor"], (8502, False))
+            iniciar.assert_not_called()                      # «dejarlo listo» sin complementos: no hace nada
+            self.assertEqual(ofrecer.call_count, 1, "ni muestra ventanas")
+
+    def test_detecta_los_complementos_que_faltan(self):
+        lz = self._cargar()
+        import importlib.util
+        real = importlib.util.find_spec
+        with mock.patch.object(importlib.util, "find_spec", lambda m, *a: None if m == "fastapi" else real(m, *a)):
+            self.assertEqual(lz.complementos_faltantes(), ["fastapi"])
+        self.assertEqual(lz.complementos_faltantes(), [], "en este equipo de pruebas está todo")
+
 
 class IaEnVivo(unittest.TestCase):
     """ia.completar avisa cada intento y cada trozo de texto (para mostrarlo mientras se escribe)."""

@@ -92,7 +92,13 @@ def revisar_complementos() -> None:
             faltan.append(paquete)
     if faltan:
         print(f"   Faltan: {', '.join(faltan)}. Instalando…")
-        subprocess.run([PY, "-m", "pip", "install", *faltan], check=True)
+        try:
+            subprocess.run([PY, "-m", "pip", "install", *faltan], check=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            # Sin internet o con la red del colegio bloqueando pip: se sigue igual. Los botones y el resto se arreglan
+            # igual; el planificador avisa qué falta cuando se abre.
+            print(f"   No se pudieron instalar ({exc}). Se sigue con lo demás: vuelve a correr ACTUALIZAR.bat con "
+                  "internet para completarlos.")
 
 
 def limpiar_versiones_viejas() -> None:
@@ -186,7 +192,9 @@ def planificador_en_botones(personal: str | None = None) -> bool:
     return True
 
 
-BOTONES_NUEVOS = ("Escala de notas", "Días sin clases")   # de la plantilla: se suman a la copia personal si faltan
+# Botones de la plantilla que se suman a la copia personal si faltan. «Planificar» y «Planificar en bloque» también:
+# quien instaló antes de que existieran (o los perdió) nunca los recibía, porque solo se convertía uno que ya estuviera.
+BOTONES_NUEVOS = ("Planificar", "Planificar en bloque", "Escala de notas", "Días sin clases")
 
 
 def botones_nuevos_en_propios(personal: str | None = None) -> list[str]:

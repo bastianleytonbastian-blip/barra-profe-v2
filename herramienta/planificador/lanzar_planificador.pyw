@@ -22,6 +22,49 @@ import webbrowser
 RAIZ = os.path.dirname(os.path.abspath(__file__))
 PUERTO_BASE = int(os.environ.get("PLANIFICADOR_PUERTO", "8501"))
 PUERTOS = range(PUERTO_BASE, PUERTO_BASE + 10)
+# Complementos de Python que necesita el servidor (módulo, paquete de requirements.txt). Si la actualización no pudo
+# instalarlos (pip sin internet en la red del colegio), el servidor no arranca: mejor decirlo que esperar un minuto.
+COMPLEMENTOS = (("fastapi", "fastapi"), ("uvicorn", "uvicorn"), ("multipart", "python-multipart"),
+                ("openai", "openai"), ("openpyxl", "openpyxl"), ("pypdf", "pypdf"), ("docx", "python-docx"),
+                ("pptx", "python-pptx"), ("PIL", "Pillow"), ("youtube_transcript_api", "youtube-transcript-api"))
+
+
+def complementos_faltantes():
+    """Los paquetes que faltan en este Python (vacío si está todo)."""
+    import importlib.util
+    faltan = []
+    for modulo, paquete in COMPLEMENTOS:
+        try:
+            if importlib.util.find_spec(modulo) is None:
+                faltan.append(paquete)
+        except (ImportError, ValueError):
+            faltan.append(paquete)
+    return faltan
+
+
+def ofrecer_instalar(faltan):
+    """Explica qué falta y, si el docente acepta, instala los complementos en una ventana de consola visible."""
+    try:
+        import tkinter
+        from tkinter import messagebox
+        raiz = tkinter.Tk()
+        raiz.withdraw()
+    except Exception:
+        return False
+    try:
+        if not messagebox.askyesno(
+                "Planificador", "Al planificador le faltan complementos de Python en este PC:\n"
+                f"{', '.join(faltan)}.\n\n¿Instalarlos ahora? Se abre una ventana negra que tarda unos minutos y "
+                "necesita internet. Cuando se cierre, vuelve a tocar «Planificar».", parent=raiz):
+            return False
+        python = sys.executable
+        if python.lower().endswith("pythonw.exe"):           # pip necesita consola para mostrar cómo va
+            python = python[:-len("pythonw.exe")] + "python.exe"
+        subprocess.Popen([python, "-m", "pip", "install", "-r", os.path.join(RAIZ, "requirements.txt")], cwd=RAIZ,
+                         creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+        return True
+    finally:
+        raiz.destroy()
 
 
 def es_mio(puerto):
@@ -122,10 +165,15 @@ def preparar():
 
 
 def main():
+    faltan = complementos_faltantes()
     if "--solo-servidor" in sys.argv[1:]:
-        preparar()
+        if not faltan:                   # sin complementos no hay servidor que dejar listo (ni ventanas que mostrar)
+            preparar()
         return
     ruta = sys.argv[1].lstrip("#/") if len(sys.argv) > 1 else "planificar"
+    if faltan and not buscar_puerto()[1]:
+        ofrecer_instalar(faltan)
+        return
     puerto = asegurar_servidor()
     if puerto is None:
         try:

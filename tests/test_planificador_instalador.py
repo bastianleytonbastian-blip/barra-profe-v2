@@ -79,6 +79,45 @@ class BotonesDeCadaDocente(unittest.TestCase):
         nombres = self.nombres()
         self.assertEqual(nombres[nombres.index("Escala de notas") - 1], "Abrir y firmar")
 
+    def test_quien_nunca_tuvo_planificar_lo_recibe(self):
+        """Antes solo se convertía un «Planificar» que ya existiera: quien no lo tenía, nunca lo veía."""
+        botones = [b for b in BOTONES_VIEJOS if b["nombre"] != "Planificar"]
+        escribir_personal(self.tmp, botones)
+        self.assertFalse(en_silencio(instalar.planificador_en_botones, personal=self.tmp))
+        agregados = en_silencio(instalar.botones_nuevos_en_propios, personal=self.tmp)
+        self.assertIn("Planificar", agregados)
+        self.assertIn("Planificar en bloque", agregados)
+        por_nombre = {b["nombre"]: b for b in leer_personal(self.tmp)[0]}
+        self.assertEqual(por_nombre["Planificar"]["destino"], DESTINO_PLANIFICADOR)
+        self.assertEqual(por_nombre["Planificar"]["grupo"], "Webclass")
+
+    def test_un_boton_oculto_no_vuelve_a_aparecer(self):
+        botones = [dict(b, oculto=True) if b["nombre"] == "Planificar" else b for b in BOTONES_VIEJOS]
+        escribir_personal(self.tmp, botones)
+        en_silencio(instalar.planificador_en_botones, personal=self.tmp)
+        en_silencio(instalar.botones_nuevos_en_propios, personal=self.tmp)
+        planificar = [b for b in leer_personal(self.tmp)[0] if b["nombre"] == "Planificar"]
+        self.assertEqual(len(planificar), 1, "no se duplica")
+        self.assertTrue(planificar[0].get("oculto"), "lo que el docente ocultó sigue oculto")
+
+    def test_si_pip_no_puede_instalar_se_sigue_con_lo_demas(self):
+        import builtins
+        from unittest import mock
+
+        def falla(*_a, **_k):
+            raise subprocess.CalledProcessError(1, "pip")
+        reales = builtins.__import__
+
+        def sin_fastapi(nombre, *a, **k):
+            if nombre == "fastapi":
+                raise ImportError(nombre)
+            return reales(nombre, *a, **k)
+        with mock.patch.object(instalar.subprocess, "run", falla), mock.patch("builtins.__import__", sin_fastapi):
+            salida = io.StringIO()
+            with contextlib.redirect_stdout(salida):
+                instalar.revisar_complementos()               # antes se caía aquí y no llegaba a los botones
+        self.assertIn("No se pudieron instalar", salida.getvalue())
+
     def test_dias_sin_clases_va_despues_del_libro_pendiente(self):
         botones = BOTONES_VIEJOS + [{"grupo": "Webclass", "nombre": "Registrar libro pendiente", "icono": "⏪",
                                      "tipo": "libro-atras", "destino": "", "ayuda": "x"},

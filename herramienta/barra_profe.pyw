@@ -7714,11 +7714,33 @@ class Barra(RAIZ_TK):
             pass
 
 
+def asegurar_botones() -> list[str]:
+    """Suma a los botones propios del docente los de fábrica que le falten («Planificar», «Días sin clases»…).
+
+    Lo hace también instalar.py al actualizar, pero si ese paso no terminó (por ejemplo, pip sin internet en la red del
+    colegio) el botón nunca aparecía. Un botón que el docente ocultó sigue en su archivo y no se toca. Devuelve los
+    nombres agregados.
+    """
+    if os.path.normcase(CONFIG) != os.path.normcase(os.path.join(rutas.PERSONAL, "herramientas.json")):
+        return []                         # sin copia propia se usa la plantilla, que ya los trae
+    try:
+        import instalar
+        instalar.planificador_en_botones()
+        agregados = instalar.botones_nuevos_en_propios()
+    except Exception:  # noqa: BLE001  (si algo falla, la barra abre igual con los botones que tenga)
+        registrar("no se pudieron revisar los botones de fábrica", traceback.format_exc())
+        return []
+    if agregados:
+        registrar(f"botones agregados: {', '.join(agregados)}")
+    return agregados
+
+
 def main() -> None:
     # Si ya hay una barra abierta, esta copia solo le avisa y se va. Así el
     # atajo de teclado (Ctrl+Alt+A) usa siempre la misma barra.
     if avisar_a_la_barra_abierta():
         return
+    asegurar_botones()
     ajustar_escalado()
     if "--sin-sonido" not in sys.argv:
         sonar_al_abrir()

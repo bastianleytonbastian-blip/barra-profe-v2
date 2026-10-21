@@ -2070,6 +2070,19 @@ class VentanaBarra(unittest.TestCase):
         self.assertEqual(self.codigo_colegio, "tizalunesguitarravolcan")
         v.destroy()
 
+    def test_al_abrir_suma_los_botones_de_fabrica_que_falten(self):
+        """Si la actualización no terminó sus pasos (pip sin internet), la barra misma agrega «Planificar»."""
+        ruta = self.mod["CONFIG"]
+        with open(ruta, encoding="utf-8-sig") as f:
+            botones = [b for b in json.load(f) if b.get("nombre") not in ("Planificar", "Planificar en bloque")]
+        with open(ruta, "w", encoding="utf-8") as f:
+            json.dump(botones, f, ensure_ascii=False, indent=2)
+        agregados = self.mod["asegurar_botones"]()
+        self.assertIn("Planificar", agregados)
+        with open(ruta, encoding="utf-8-sig") as f:
+            self.assertIn("Planificar", [b.get("nombre") for b in json.load(f)])
+        self.assertEqual(self.mod["asegurar_botones"](), [], "la segunda vez no hay nada que sumar")
+
     def test_la_barra_no_trae_nada_de_administrador(self):
         """Publicar es de la mini app «Administrador del colegio», que no viaja con la barra: ni aunque este PC pueda."""
         with mock.patch.object(self.mod["colegio"], "es_administrador", lambda *a, **k: True):
