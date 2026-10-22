@@ -2060,6 +2060,32 @@ class VentanaBarra(unittest.TestCase):
         self.assertEqual(self.codigo_colegio, self.mod["colegio"].normalizar_codigo(self.CODIGO))
         v.destroy()
 
+    def test_el_ticket_verde_dice_si_llegan_claves_de_ia(self):
+        """Antes decía «ya llegan las claves de IA» aunque el colegio no hubiera publicado ninguna."""
+        col = self.mod["colegio"]
+        for claves, esperado in (({}, "todavía no publica claves de IA"),
+                                 ({"GEMINI_API_KEY": "k"}, "Llegan 1 clave de IA del colegio")):
+            with self.subTest(claves=claves):
+                self.codigo_colegio = ""
+                col.guardar_paquete(self.mod["BUZON_COLEGIO"], col.cerrar(self.CODIGO, {"claves": claves}))
+                v = self.mod["VentanaClaveColegio"](self.barra)
+                v.texto.set(self.CODIGO)
+                v._guardar()
+                self._esperar(lambda: "Guardada" in v.aviso.cget("text"))
+                self.assertIn(esperado, v.aviso.cget("text"))
+                v.destroy()
+                v = self.mod["VentanaClaveColegio"](self.barra)          # al volver a abrirla, lo mismo
+                self.assertIn(esperado, v.aviso.cget("text"))
+                v.destroy()
+
+    def test_sin_internet_no_promete_nada(self):
+        v = self.mod["VentanaClaveColegio"](self.barra)                  # sin buzón y la descarga falla
+        v.texto.set(self.CODIGO)
+        v._guardar()
+        self._esperar(lambda: "Guardada" in v.aviso.cget("text"))
+        self.assertIn("no pude traer lo del colegio", v.aviso.cget("text"))
+        v.destroy()
+
     def test_la_clave_del_colegio_puede_ser_una_frase(self):
         col = self.mod["colegio"]
         col.guardar_paquete(self.mod["BUZON_COLEGIO"], col.cerrar("Tiza lunes guitarra volcán", {"mensajes": []}))

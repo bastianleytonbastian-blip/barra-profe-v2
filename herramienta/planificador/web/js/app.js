@@ -69,6 +69,7 @@ async function abrirDialogoIA() {
   const notaColegio = {
     sin_codigo: "Tu colegio reparte claves de IA, pero falta la <b>clave del colegio</b> en este PC: pégala en la barra (⚙ Ajustes → Profesor → «Clave del colegio»).",
     codigo_incorrecto: "La clave del colegio de este PC no abre las claves del colegio: revísala en la barra (⚙ Ajustes → Profesor → «Clave del colegio»).",
+    ok: delColegio ? "" : "La clave del colegio de este PC funciona, pero el colegio <b>todavía no publica claves de IA</b>. Pídeselas a quien administra la barra o, mientras tanto, agrega una tuya.",
   }[ia.colegio];
   form.innerHTML = `
     <div><h2>Conectar la IA</h2>

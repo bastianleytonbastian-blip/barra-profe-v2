@@ -3,6 +3,13 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: función nueva · PARCHE: arreglo).
 
+## 2.11.3
+- «Clave del colegio»: el ticket verde dice cuántas claves de IA del colegio llegaron, o que el colegio todavía no
+  publica ninguna (antes prometía claves aunque no hubiera). Si no pudo traer lo del colegio por falta de internet,
+  también lo dice.
+- Trae el planificador 1.5.2: si quedó corriendo un planificador de antes de actualizar, se cierra solo y se abre el
+  nuevo; y «Claves de IA» explica cuando el colegio todavía no publica claves.
+
 ## 2.11.2
 - Arreglo: a algunos profes no les aparecía «Planificar». Pasaba si su lista de botones nunca lo tuvo (solo se
   convertía uno que ya existiera) o si la actualización no pudo instalar los complementos (pip sin internet en la red

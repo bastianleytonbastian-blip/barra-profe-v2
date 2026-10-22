@@ -257,6 +257,9 @@ def sin_claves_explicado():
     if motivo == "codigo_incorrecto":
         return ("La clave del colegio de este PC no abre las claves de IA del colegio: revísala en la barra "
                 "(⚙ Ajustes → Profesor → «Clave del colegio») o agrega una tuya en «Claves de IA».")
+    if motivo == "ok" and not claves_del_colegio():
+        return ("La clave del colegio de este PC funciona, pero el colegio todavía no publica claves de IA: pídeselas "
+                "a quien administra la barra, o agrega una tuya en «Claves de IA».")
     return "No hay ninguna clave de IA configurada: agrégala en «Claves de IA»."
 
 

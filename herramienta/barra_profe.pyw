@@ -2041,10 +2041,17 @@ class VentanaClaveColegio(VentanaBase):
     """
 
     ANCHO = 470
-    ESTADOS = {"ok": "✓ Este PC ya tiene la clave del colegio: llegan los mensajes para ti y las claves de IA.",
+    ESTADOS = {"ok": "✓ Este PC ya tiene la clave del colegio.",
                "sin_codigo": "Este PC todavía no tiene la clave del colegio.",
                "codigo_incorrecto": "La clave guardada no abre lo que publicó el colegio: pega la nueva.",
                "sin_buzon": "Aún no llega nada del colegio a este PC."}
+
+    @staticmethod
+    def texto_de_claves(cuantas: int) -> str:
+        """Que el ticket verde no prometa claves de IA que el colegio todavía no publica."""
+        if cuantas:
+            return f" Llegan {cuantas} clave{'s' if cuantas != 1 else ''} de IA del colegio para el planificador."
+        return " El colegio todavía no publica claves de IA: cuando lo haga, llegarán solas."
 
     def __init__(self, maestra):
         super().__init__(maestra, "Clave del colegio",
@@ -2057,8 +2064,13 @@ class VentanaClaveColegio(VentanaBase):
         self.campo = estilo_campo(tk.Entry(self.cuerpo, textvariable=self.texto, font=letra(12), justify="center"))
         self.campo.pack(fill="x", ipady=4)
         self.campo.bind("<Return>", lambda _e: self._guardar())
-        estado = colegio.estado(BUZON_COLEGIO, colegio.codigo_guardado(vigencia=0))
-        self.aviso = tk.Label(self.cuerpo, text=self.ESTADOS[estado], bg=COLOR_FONDO,
+        codigo = colegio.codigo_guardado(vigencia=0)
+        estado = colegio.estado(BUZON_COLEGIO, codigo)
+        texto = self.ESTADOS[estado]
+        if estado == "ok":
+            texto += self.texto_de_claves(len((colegio.contenido_guardado(BUZON_COLEGIO, codigo) or {}).get("claves")
+                                              or {}))
+        self.aviso = tk.Label(self.cuerpo, text=texto, bg=COLOR_FONDO,
                               fg=COLOR_OK if estado == "ok" else COLOR_TENUE, font=letra(9), anchor="w", justify="left",
                               wraplength=self.ancho_texto())
         self.aviso.pack(fill="x", pady=(8, 0))
@@ -2079,23 +2091,29 @@ class VentanaClaveColegio(VentanaBase):
             return
         self.aviso.configure(text="Revisando con lo que publicó el colegio…", fg=COLOR_TENUE)
 
-        def trabajo() -> str:
+        def trabajo() -> tuple[str, int]:
+            sin_red = False
             try:
                 colegio.descargar(BUZON_COLEGIO)
-            except (OSError, ValueError):
-                pass                       # sin internet (o nada publicado aún): se revisa con lo que ya había
+            except (OSError, ValueError) as exc:
+                # 404: el colegio todavía no publica nada. Otro error: sin internet; se revisa con lo que ya había.
+                sin_red = getattr(exc, "code", None) != 404
             paquete = colegio.leer_paquete(BUZON_COLEGIO)
-            if paquete is not None and colegio.abrir(paquete, codigo) is None:
-                return "no_abre"
+            abierto = colegio.abrir(paquete, codigo) if paquete is not None else None
+            if paquete is not None and abierto is None:
+                return "no_abre", 0
             colegio.guardar_codigo(escrito)            # tal como se escribió: así se puede mostrar
-            return "ok" if paquete is not None else "sin_buzon"
+            if abierto is None:
+                return ("sin_red" if sin_red else "sin_buzon"), 0
+            return "ok", len(abierto["claves"])
         self.en_segundo_plano(trabajo, self._guardado)
 
     def _guardado(self, resultado, error) -> None:
         if error is not None:
             self.aviso.configure(text=f"No pude guardarla: {error}", fg=COLOR_ERROR)
             return
-        if resultado == "no_abre":
+        estado, claves = resultado
+        if estado == "no_abre":
             self.aviso.configure(text="Esa clave no abre lo que publicó el colegio. Revisa que esté bien escrita.",
                                  fg=COLOR_ERROR)
             return
@@ -2104,9 +2122,15 @@ class VentanaClaveColegio(VentanaBase):
         if callable(refrescar):
             refrescar()
         self.texto.set("")
-        self.aviso.configure(text="✓ Guardada. Ya llegan los mensajes para ti y las claves de IA del colegio."
-                             if resultado == "ok"
-                             else "✓ Guardada. Cuando el colegio publique algo, llegará solo.", fg=COLOR_OK)
+        if estado == "ok":
+            texto, color = "✓ Guardada. Ya llegan los mensajes para ti." + self.texto_de_claves(claves), \
+                COLOR_OK if claves else COLOR_AVISO
+        elif estado == "sin_red":
+            texto, color = ("✓ Guardada, pero ahora no pude traer lo del colegio (¿sin internet?). La barra lo "
+                            "reintenta sola cada 3 minutos."), COLOR_AVISO
+        else:
+            texto, color = "✓ Guardada. Cuando el colegio publique algo, llegará solo.", COLOR_OK
+        self.aviso.configure(text=texto, fg=color)
         self.limpiar_botones()
         self.boton("Cerrar", self.destroy, principal=True)
 

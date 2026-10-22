@@ -83,11 +83,63 @@ def esta_libre(puerto):
         return s.connect_ex(("127.0.0.1", puerto)) != 0
 
 
+def version_local():
+    """La versión del planificador de esta carpeta ('' si no se sabe)."""
+    try:
+        with open(os.path.join(RAIZ, "VERSION"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def version_corriendo(puerto):
+    """La versión del planificador que atiende en ese puerto ('' si no la informa: uno muy antiguo)."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{puerto}/api/version", timeout=2) as r:
+            return str(json.load(r).get("planificador") or "")
+    except Exception:
+        return ""
+
+
+def apagar(puerto):
+    """Cierra el planificador de ese puerto con «Cerrar el planificador». Como el navegador, primero pide la página para
+    tener el token de la sesión. True si se cerró."""
+    import http.cookiejar
+    import re
+    base = f"http://127.0.0.1:{puerto}"
+    try:
+        abridor = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        with abridor.open(base + "/", timeout=3) as r:
+            pagina = r.read().decode("utf-8", "replace")
+        m = re.search(r'name="planificador-token" content="([^"]+)"', pagina)
+        if not m:
+            return False
+        pedido = urllib.request.Request(base + "/api/apagar", data=b"{}", method="POST",
+                                        headers={"x-planificador-token": m.group(1), "Content-Type": "application/json"})
+        abridor.open(pedido, timeout=3).close()
+    except Exception:
+        return False
+    for _ in range(40):                  # hasta ~10 s para soltar el puerto
+        if not es_mio(puerto):
+            return True
+        time.sleep(0.25)
+    return False
+
+
 def buscar_puerto():
-    """(puerto, ya_corriendo). Primero el servidor propio que ya esté abierto; si no, el primer puerto libre."""
+    """(puerto, ya_corriendo). Primero el servidor propio que ya esté abierto; si no, el primer puerto libre.
+
+    Un servidor propio de OTRA versión quedó corriendo de antes de una actualización (sigue en segundo plano aunque la
+    barra se reinicie) y atiende con el código viejo: se cierra y se abre el nuevo en su lugar.
+    """
     for p in PUERTOS:
         if es_mio(p):
-            return p, True
+            local = version_local()
+            if not local or version_corriendo(p) == local:
+                return p, True
+            if apagar(p):
+                return p, False
+            return p, True               # no se pudo cerrar: mejor el que hay que ninguno
     for p in PUERTOS:
         if esta_libre(p):
             return p, False

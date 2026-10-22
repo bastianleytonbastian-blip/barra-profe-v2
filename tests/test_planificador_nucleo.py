@@ -468,6 +468,30 @@ class Lanzador(unittest.TestCase):
             iniciar.assert_not_called()                      # «dejarlo listo» sin complementos: no hace nada
             self.assertEqual(ofrecer.call_count, 1, "ni muestra ventanas")
 
+    def _buscar(self, version_que_corre, se_apaga=True):
+        lz = self._cargar()
+        with mock.patch.object(lz, "es_mio", lambda p: p == 8501), \
+                mock.patch.object(lz, "version_local", return_value="1.5.2"), \
+                mock.patch.object(lz, "version_corriendo", return_value=version_que_corre), \
+                mock.patch.object(lz, "apagar", return_value=se_apaga) as apagar:
+            return lz.buscar_puerto(), apagar
+
+    def test_un_planificador_de_otra_version_se_cierra_y_se_abre_el_nuevo(self):
+        (puerto, corriendo), apagar = self._buscar("1.4.1")
+        self.assertEqual((puerto, corriendo), (8501, False), "en su lugar se inicia el nuevo")
+        apagar.assert_called_once_with(8501)
+        (_, corriendo), apagar = self._buscar("")             # uno tan antiguo que no informa su versión
+        self.assertFalse(corriendo)
+
+    def test_el_de_la_misma_version_se_usa_tal_cual(self):
+        (puerto, corriendo), apagar = self._buscar("1.5.2")
+        self.assertEqual((puerto, corriendo), (8501, True))
+        apagar.assert_not_called()
+
+    def test_si_no_se_puede_cerrar_el_viejo_se_usa_igual(self):
+        (puerto, corriendo), _ = self._buscar("1.4.1", se_apaga=False)
+        self.assertEqual((puerto, corriendo), (8501, True))
+
     def test_detecta_los_complementos_que_faltan(self):
         lz = self._cargar()
         import importlib.util
@@ -574,6 +598,16 @@ class ClavesDelColegio(unittest.TestCase):
                 self.assertEqual(ia.estado_colegio(), estado)
                 self.assertFalse(ia.hay_proveedor())
                 self.assertIn(frase, ia.sin_claves_explicado())
+
+    def test_si_el_colegio_no_publica_claves_lo_explica(self):
+        """La clave del colegio funciona (ticket verde), pero el buzón no trae claves de IA: se dice eso, no «falta la
+        clave»."""
+        ia = self.ia
+        with comun.BarraFalsa() as barra, mock.patch("keyring.get_password", return_value=self.CODIGO):
+            self._buzon(barra, {})
+            self.assertEqual(ia.estado_colegio(), "ok")
+            self.assertFalse(ia.hay_proveedor())
+            self.assertIn("todavía no publica claves de IA", ia.sin_claves_explicado())
 
     def test_planificador_suelto_sin_barra_no_falla(self):
         with mock.patch.object(self.ia, "_colegio", return_value=None):

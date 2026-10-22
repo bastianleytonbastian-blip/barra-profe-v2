@@ -3,6 +3,11 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Requiere Barra Profe 2.6.0 o más nueva (`BARRA_MINIMA` en `nucleo/version.py`).
 
+## 1.5.2
+- Si al tocar «Planificar» queda corriendo un planificador de otra versión (de antes de actualizar la barra, con el código
+  viejo), se cierra solo y se abre el nuevo. Así las novedades —como las claves de IA del colegio— valen al tiro.
+- «Claves de IA» y los avisos explican cuando la clave del colegio funciona pero el colegio todavía no publica claves.
+
 ## 1.5.1
 - Si a este PC le faltan complementos de Python (fastapi, openai…), «Planificar» lo dice al tiro y ofrece instalarlos,
   en vez de esperar un minuto y mostrar un error sin explicación.

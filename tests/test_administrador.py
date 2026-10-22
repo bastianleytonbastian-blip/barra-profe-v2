@@ -79,7 +79,10 @@ class MiniApp(unittest.TestCase):
             parche = mock.patch.object(colegio, nombre, falso)
             parche.start()
             self.addCleanup(parche.stop)
-        parche = mock.patch.dict(self.mod, {"messagebox": mock.Mock(askyesno=sin_ventanas)})
+        # Las claves de IA del planificador de quien corre las pruebas jamás se leen: se simulan.
+        self.mias = {}
+        parche = mock.patch.dict(self.mod, {"messagebox": mock.Mock(askyesno=sin_ventanas),
+                                            "mis_claves": lambda: dict(self.mias)})
         parche.start()
         self.addCleanup(parche.stop)
 
@@ -230,6 +233,43 @@ class MiniApp(unittest.TestCase):
         self.assertEqual(colegio.abrir(self.publicados[-1], CODIGO)["claves"], {"GROQ_API_KEY": "gsk-clave-del-colegio-4321"})
         self.assertNotIn("gsk-clave-del-colegio", json.dumps(self.publicados[-1]))
         self.assertIn("publicada …4321", self.textos(app))
+
+    def test_sin_claves_publicadas_lo_dice_y_ofrece_las_de_mi_planificador(self):
+        self.codigo = colegio.normalizar_codigo(CODIGO)
+        app = self.abrir()
+        app.elegir("Claves de IA")
+        self.assertIn("Todavía no hay claves de IA publicadas", self.textos(app))
+        self.assertNotIn("Usar las claves de mi planificador", self.textos(app), "sin claves propias no se ofrece")
+        self.mias = {"GEMINI_API_KEY": "AIza-mia-1111", "OTRA_COSA": "no se copia"}
+        app.elegir("Claves de IA")
+        self.assertIn("Usar las claves de mi planificador", self.textos(app))
+        app._usar_mis_claves()
+        self.assertEqual(app.campos_claves["GEMINI_API_KEY"].get(), "AIza-mia-1111")
+        self.assertEqual(app.campos_claves["GROQ_API_KEY"].get(), "")
+        self.assertIn("Se copiaron 1 clave", app.aviso.cget("text"))
+        self.assertEqual(self.publicados, [], "copiar no publica: falta «Guardar y publicar»")
+        app._publicar_claves()
+        self.esperar(app, lambda: "quedaron publicadas" in app.aviso.cget("text"))
+        self.assertEqual(colegio.abrir(self.publicados[-1], CODIGO)["claves"], {"GEMINI_API_KEY": "AIza-mia-1111"})
+        self.assertNotIn("Todavía no hay claves de IA publicadas", self.textos(app))
+
+    def test_mis_claves_lee_solo_las_de_la_cuenta_activa(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "perfiles"))
+            for cuenta in ("ana", "beto"):
+                open(os.path.join(tmp, "perfiles", f"{cuenta}.json"), "w").close()
+            carpeta = os.path.join(tmp, "planificador", "ana")
+            os.makedirs(carpeta)
+            with open(os.path.join(carpeta, "claves.json"), "w", encoding="utf-8") as f:
+                json.dump({"GEMINI_API_KEY": " k1 ", "GROQ_API_KEY": "", "OTRA": "x"}, f)
+            leer = cargar()["mis_claves"]                         # la de verdad, con rutas simuladas
+            rutas = self.mod["rutas"]
+            for activa, esperado in (("ana", {"GEMINI_API_KEY": "k1"}), ("beto", {}),
+                                     ("", {"GEMINI_API_KEY": "k1"})):  # sin perfil_activo.txt: la primera, como la barra
+                with self.subTest(activa=activa), mock.patch.object(rutas, "PERSONAL", tmp), \
+                        mock.patch.object(rutas, "PERFILES", os.path.join(tmp, "perfiles")), \
+                        mock.patch.object(rutas, "perfil_activo", lambda *a, c=activa: c):
+                    self.assertEqual(leer(), esperado)
 
     def test_si_github_falla_lo_dice_y_no_cambia_lo_guardado(self):
         self.codigo = colegio.normalizar_codigo(CODIGO)
