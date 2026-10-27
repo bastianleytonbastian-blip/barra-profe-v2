@@ -457,11 +457,15 @@ ASIGNATURAS_SUBIDA = (("ciencias", "Ciencias Naturales"), ("matematica", "Matem�
                       ("lenguaje", "Lenguaje y Comunicación"), ("historia", "Historia, Geografía y Cs. Sociales"),
                       ("orientacion", "Orientación"), ("tecnologia", "Tecnología"), ("biologia", "Biología"),
                       ("quimica", "Química"), ("fisica", "Física"), ("filosofia", "Filosofía y Psicología"),
-                      ("integracion", "Programa de Integración Escolar"))
+                      ("integracion", "Programa de Integración Escolar"), ("religion", "Religión"),
+                      ("ingles", "Inglés"), ("educacion_fisica", "Educación Física y Salud"), ("musica", "Música"),
+                      ("artes", "Artes Visuales"))
 # Código de cada asignatura en el formulario de recursos de WebClass («selectSectorLocal»). Es la ÚNICA tabla: de aquí la
 # toman el subidor (webclass_recursos.ASIGNATURAS) y el planificador, así no se desfasan.
 ID_ASIGNATURA = {"ciencias": 3, "matematica": 2, "lenguaje": 1, "historia": 4, "orientacion": 9, "tecnologia": 7,
-                 "biologia": 12, "quimica": 14, "fisica": 13, "filosofia": 16, "integracion": 107}
+                 "biologia": 12, "quimica": 14, "fisica": 13, "filosofia": 16, "integracion": 107,
+                 # Leídos del formulario de WebClass el 22/10/2026 (class/data.php, case=3).
+                 "religion": 15, "ingles": 10, "educacion_fisica": 5, "musica": 8, "artes": 6}
 
 
 def _sin_tildes(texto: str) -> str:

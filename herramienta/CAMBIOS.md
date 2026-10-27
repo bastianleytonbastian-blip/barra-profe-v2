@@ -3,6 +3,12 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: función nueva · PARCHE: arreglo).
 
+## 2.11.4
+- Al subir recursos aparecen Religión, Inglés, Educación Física y Salud, Música y Artes Visuales (códigos leídos de
+  WebClass), también para quien no ha actualizado sus cursos.
+- Arreglo: «Actualizar mis cursos y unidades» no traía las asignaturas de WebClass (el formulario las carga aparte);
+  ahora trae todas las del colegio.
+
 ## 2.11.3
 - «Clave del colegio»: el ticket verde dice cuántas claves de IA del colegio llegaron, o que el colegio todavía no
   publica ninguna (antes prometía claves aunque no hubiera). Si no pudo traer lo del colegio por falta de internet,

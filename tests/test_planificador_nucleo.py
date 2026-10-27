@@ -376,7 +376,9 @@ class TrabajadorDeWebClass(unittest.TestCase):
         self.assertEqual(bw.id_asignatura(rec, "Historia, Geografía y Ciencias Sociales"), rec.ASIGNATURAS["historia"],
                          "manda la palabra que aparece primero")
         self.assertEqual(bw.id_asignatura(rec, "Filosofía"), rec.ASIGNATURAS["filosofia"])
-        self.assertIsNone(bw.id_asignatura(rec, "Artes Visuales"))
+        self.assertEqual(bw.id_asignatura(rec, "Religión"), 15, "código leído de WebClass real")
+        self.assertEqual(bw.id_asignatura(rec, "Artes Visuales"), 6)
+        self.assertIsNone(bw.id_asignatura(rec, "Cine y Teatro"), "fuera de la tabla, solo con la lista de la cuenta")
 
     def test_el_marcador_usa_la_tabla_de_asignaturas_de_barra(self):
         wc = comun.importar("nucleo.webclass")
@@ -399,9 +401,11 @@ class TrabajadorDeWebClass(unittest.TestCase):
             self.assertEqual(wc.asignaturas_de_barra(), {"Ciencias Naturales": "3", "Música": "50"})
 
     def test_la_asignatura_de_una_unidad_usa_la_lista_de_la_cuenta(self):
-        perfil = {"asignaturas_webclass": [{"id": 3, "nombre": "Ciencias Naturales"}, {"id": 50, "nombre": "Música"}]}
-        self.assertEqual(bw.asignatura_de_la_unidad(rec, perfil, "Música"), 50)
-        self.assertEqual(bw.asignatura_de_la_unidad(rec, {}, "Música"), None, "sin la lista, la tabla no conoce Música")
+        perfil = {"asignaturas_webclass": [{"id": 3, "nombre": "Ciencias Naturales"}, {"id": 18, "nombre": "Cine y Teatro"}]}
+        self.assertEqual(bw.asignatura_de_la_unidad(rec, perfil, "Cine y Teatro"), 18)
+        self.assertEqual(bw.asignatura_de_la_unidad(rec, {}, "Cine y Teatro"), None,
+                         "sin la lista, la tabla no conoce Cine y Teatro")
+        self.assertEqual(bw.asignatura_de_la_unidad(rec, {}, "Religión"), 15, "Religión ya está en la tabla")
         self.assertEqual(bw.asignatura_de_la_unidad(rec, {}, "Historia, Geografía y Ciencias Sociales"), rec.ASIGNATURAS["historia"])
 
     def test_la_lista_de_la_cuenta_se_lee_sin_tocar_otros_datos_del_perfil(self):

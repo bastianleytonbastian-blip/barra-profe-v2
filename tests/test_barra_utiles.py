@@ -1076,6 +1076,31 @@ class AsignaturasDeLaCuenta(unittest.TestCase):
             {"id": 3, "nombre": "Ciencias Naturales"}, {"id": 50, "nombre": "Música"}, {"id": 51, "nombre": "Educación Física y Salud"}])
         self.assertEqual(rec.asignaturas_del_formulario("<html>sin selector</html>"), [])
 
+    def test_lee_las_asignaturas_como_las_entrega_webclass(self):
+        """El selector viene vacío y su JavaScript lo llena con class/data.php (case=3): así lo entregó WebClass real."""
+        import webclass_recursos as rec
+        from types import SimpleNamespace as N
+        pagina = ("<script type='text/javascript'> var idcolegio=1795; var idcurr=881</script>"
+                  '<select name="selectSectorLocal" id="selectSectorLocal" class="form-control"></select>')
+        opciones = ('<option value="-1">- Seleccione asignatura -</option><option value="3">Ciencias Naturales</option>'
+                    '<option value="100">ninguno</option><option value="15">Religion</option>')
+        pedidos = []
+
+        class Sesion:
+            def get(self, url, params=None, **_k):
+                pedidos.append((url.rsplit("/", 1)[-1], params))
+                return N(text=opciones if url.endswith("data.php") else pagina, raise_for_status=lambda: None)
+        self.assertEqual(rec.leer_asignaturas(Sesion()), [{"id": 3, "nombre": "Ciencias Naturales"},
+                                                          {"id": 15, "nombre": "Religion"}])
+        self.assertEqual(pedidos[-1], ("data.php", {"idcolegio": "1795", "idcurr": "881", "case": 3}))
+
+    def test_la_tabla_de_respaldo_trae_religion_y_las_demas_de_webclass(self):
+        """Códigos leídos de WebClass real: aunque la cuenta no haya leído su lista, aparecen para subir."""
+        nombres = {n: u.ID_ASIGNATURA[c] for c, n in u.ASIGNATURAS_SUBIDA}
+        self.assertEqual((nombres["Religión"], nombres["Inglés"], nombres["Educación Física y Salud"],
+                          nombres["Música"], nombres["Artes Visuales"]), (15, 10, 5, 8, 6))
+        self.assertIn("Religión", [n for _c, n, _i in u.asignaturas_de_la_cuenta({})])
+
 
 class MisRegistros(unittest.TestCase):
     """Fase 5: la ventana «Mis registros» lee los CSV del libro, de las subidas y de las tareas."""

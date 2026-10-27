@@ -151,11 +151,27 @@ def asignaturas_del_formulario(pagina: str) -> list[dict]:
     return salida
 
 
+NO_SON_ASIGNATURAS = ("ninguno",)       # opciones del selector que no sirven para firmar un recurso
+
+
 def leer_asignaturas(session) -> list[dict]:
-    """Asignaturas que ofrece WebClass al subir un recurso. Solo lectura: abre el formulario y no envía nada."""
+    """Asignaturas que ofrece WebClass al subir un recurso. Solo lectura: abre el formulario y no envía nada.
+
+    El selector viene vacío en la página: su JavaScript lo llena con class/data.php (case=3) usando el colegio y el
+    currículo que la página declara («var idcolegio=…; var idcurr=…»). Se hace la misma consulta.
+    """
     r = session.get(f"{MULTIFILE}/subidaArchivo.php", params={"cl": 1}, headers=w.HEADERS, timeout=120)
     r.raise_for_status()
-    return asignaturas_del_formulario(r.text)
+    lista = asignaturas_del_formulario(r.text)               # por si algún día vienen en la misma página
+    colegio = re.search(r"\bidcolegio\s*=\s*(\d+)", r.text)
+    curriculo = re.search(r"\bidcurr\s*=\s*(\d+)", r.text)
+    if not lista and colegio and curriculo:
+        opciones = session.get(f"{MULTIFILE}/class/data.php",
+                               params={"idcolegio": colegio.group(1), "idcurr": curriculo.group(1), "case": 3},
+                               headers=w.HEADERS, timeout=120)
+        opciones.raise_for_status()
+        lista = asignaturas_del_formulario(f'<select id="selectSectorLocal">{opciones.text}</select>')
+    return [a for a in lista if a["nombre"].strip().lower() not in NO_SON_ASIGNATURAS]
 
 
 def subir_o_reutilizar(session, ruta: str, *, nombre: str, autor: str, niveles: list[int],
