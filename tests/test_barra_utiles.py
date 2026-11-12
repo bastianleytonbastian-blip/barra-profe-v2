@@ -494,6 +494,46 @@ class ObservacionLista(unittest.TestCase):
         self.assertEqual(len(malos), 1)
 
 
+class AvisosDeObservaciones(unittest.TestCase):
+    NUEVA = {"id": "obs-1", "curso": "5BA", "tipo": "Negativa", "alumnas": ["Ana Rios"], "profesor": "Luz Soto",
+             "texto": "Llegó tarde", "creado": "2026-11-04 10:30"}
+
+    def avisos(self, *nuevas, leidos=()):
+        return u.avisos_de_observaciones({"nuevas": list(nuevas)}, set(leidos))
+
+    def test_una_alumna(self):
+        a = self.avisos(self.NUEVA)[0]
+        self.assertEqual((a["id"], a["tipo"], a["creado"]), ("obs-1", "observacion", "2026-11-04 10:30"))
+        self.assertEqual(a["texto"], "Ana Rios: Llegó tarde")
+        self.assertEqual(u.titulo_de_aviso(a), "Observación negativa · 5BA de Luz Soto")
+
+    def test_varias_alumnas_se_resumen(self):
+        a = self.avisos({**self.NUEVA, "alumnas": ["Ana", "Luz", "Eva", "Sol"]})[0]
+        self.assertEqual(a["texto"], "Ana, Luz y 2 más: Llegó tarde")
+        a = self.avisos({**self.NUEVA, "alumnas": ["Ana", "Luz"]})[0]
+        self.assertEqual(a["texto"], "Ana, Luz: Llegó tarde")
+
+    def test_las_marcadas_listas_ya_no_salen(self):
+        self.assertEqual(self.avisos(self.NUEVA, leidos=["obs-1"]), [])
+
+    def test_texto_largo_se_corta(self):
+        a = self.avisos({**self.NUEVA, "alumnas": [], "texto": "x" * 1500})[0]
+        self.assertEqual(len(a["texto"]), u.LARGO_TEXTO_AVISO + 1)
+        self.assertTrue(a["texto"].endswith("…"))
+
+    def test_sin_tipo_ni_profesor(self):
+        a = self.avisos({"id": "obs-2", "curso": "5BA", "texto": "Algo"})[0]
+        self.assertEqual(u.titulo_de_aviso(a), "Observación · 5BA")
+
+    def test_archivo_vacio_o_raro_no_rompe_la_barra(self):
+        self.assertEqual(u.avisos_de_observaciones({}, set()), [])
+        self.assertEqual(self.avisos("raro", {"sin": "id"}), [])
+
+    def test_los_avisos_del_colegio_conservan_su_titulo(self):
+        self.assertEqual(u.titulo_de_aviso({"tipo": "aviso", "de": ""}), "Aviso de hoy")
+        self.assertEqual(u.titulo_de_aviso({"tipo": "mensaje", "de": "Ana"}), "Mensaje de Ana")
+
+
 class HaciaAtras(unittest.TestCase):
     HOY = datetime.date(2026, 10, 7)                # miércoles
 

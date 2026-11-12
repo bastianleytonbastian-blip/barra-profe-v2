@@ -68,7 +68,7 @@ class BotonesDeCadaDocente(unittest.TestCase):
         antes = leer_personal(self.tmp)[1]
         self.assertFalse(en_silencio(instalar.planificador_en_botones, personal=self.tmp))
         self.assertEqual(en_silencio(instalar.botones_nuevos_en_propios, personal=self.tmp),
-                         ["Escala de notas", "Días sin clases"])
+                         ["Escala de notas", "Días sin clases", "Informe de personalidad"])
         self.assertEqual(en_silencio(instalar.botones_nuevos_en_propios, personal=self.tmp), [])
         self.assertEqual(en_silencio(instalar.botones_retirados_de_propios, personal=self.tmp), ["Mensajes del equipo"])
         self.assertEqual(en_silencio(instalar.botones_retirados_de_propios, personal=self.tmp), [])

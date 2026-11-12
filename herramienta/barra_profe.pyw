@@ -61,6 +61,7 @@ import rutas                              # noqa: E402
 import re                                 # noqa: E402
 import tema                               # noqa: E402
 import colegio                            # noqa: E402
+import informe_personalidad as ip         # noqa: E402
 from barra_utiles import (                # noqa: E402
     ATAJOS_ATRAS, ESTADOS, TOUR_PASOS, agrupar_items, ahora_y_luego, aplicar_destinos,
     argumentos_de_seleccion, cargar_ejecuciones, comando_con_seleccion, dias_de_periodos,
@@ -69,7 +70,8 @@ from barra_utiles import (                # noqa: E402
     formatear_duracion, guardar_ejecucion, hace_cuanto, lineas_de_resultado, marcar_tour_visto,
     minutos, monitores, niveles_del_docente, nombre_de_nivel, opciones_de_pregunta, ordenar_carpetas, parsear_item, parsear_opciones, parsear_progreso, partes_de_comando,
     rango_de_atajo, reemplazar_variables, resumir_ejecucion, saludo_para, tour_pendiente,
-    asunto_de_correo, cursos_en_nombres, problemas_de_observacion, texto_atrasados, texto_de_correo, traducir_error,
+    asunto_de_correo, avisos_de_observaciones, cursos_en_nombres, problemas_de_observacion, texto_atrasados,
+    texto_de_correo, titulo_de_aviso, traducir_error,
     vista_previa_libro, vista_previa_simulacion, vista_previa_subir,
     asignatura_corta, bloques_de_horario_webclass, horario_vencido, leer_json, pestana_de_registro,
     PIN_VALIDO, desbloqueo_vigente, guardar_pin, marcar_desbloqueo, pin_correcto, ruta_pin, tiene_pin,
@@ -200,6 +202,7 @@ def comando_webclass(subcomando: str, *opciones: str) -> list[str]:
                "subir": os.path.join(WEBCLASS, "subir_carpeta.py"),
                "libro": os.path.join(WEBCLASS, "webclass_libro.py"),
                "observar": os.path.join(WEBCLASS, "webclass_observaciones.py"),
+               "personalidad": os.path.join(WEBCLASS, "webclass_personalidad.py"),
                "planificar": os.path.join(WEBCLASS, "webclass_planificacion.py"),
                "correo": os.path.join(WEBCLASS, "correo_pie.py"),
                "configurar": os.path.join(WEBCLASS, "configurar.py")}
@@ -233,6 +236,11 @@ SIN_CLASES = rutas.sin_clases(PERFIL)
 BUZON_COLEGIO = rutas.dato(colegio.ARCHIVO)
 AVISOS_LEIDOS = rutas.dato(f"avisos_leidos{_sufijo}.json")
 MS_VIGILAR_COLEGIO = 3 * 60 * 1000
+# Observaciones del libro en los cursos que eligió el docente (preferencia «observaciones_cursos»): lo ya visto y lo nuevo.
+OBSERVACIONES_VIGILADAS = rutas.dato(f"observaciones_vigiladas{_sufijo}.json")
+MINUTOS_VIGILAR_OBSERVACIONES = 10
+# Informe de personalidad: lo leído de WebClass y el borrador de lo respondido (por docente, curso y periodo).
+CARPETA_PERSONALIDAD = rutas.dato("personalidad")
 # Favoritos de quien todavía no eligió los suyos (clic derecho en un botón: «Agregar a favoritos»).
 FAVORITOS_INICIALES = ("Registrar libro", "Asignar clases", "Planificar", "Subir recursos", "Escala de notas")
 GRUPO_FAVORITOS = "★ Favoritos"
@@ -645,7 +653,7 @@ def cargar_docente(clave: str) -> None:
     for nombre, base in (("RUTA_MENSAJES", "mensajes"), ("ESTADO_FIRMAS", "estado_firmas"), ("TEMA", "tema"),
                          ("HORARIO_SEMANA", "horario_semana"), ("TAREAS", "lista_tareas"),
                          ("EJECUCIONES", "ultimas_ejecuciones"), ("TOUR", "tour"), ("PREFERENCIAS", "preferencias"),
-                         ("AVISOS_LEIDOS", "avisos_leidos")):
+                         ("AVISOS_LEIDOS", "avisos_leidos"), ("OBSERVACIONES_VIGILADAS", "observaciones_vigiladas")):
         g[nombre] = rutas.dato(f"{base}{sufijo}.json")
     g["SIN_CLASES"] = rutas.sin_clases(clave)
     aplicar_apariencia(apariencia_guardada())
@@ -758,6 +766,8 @@ def abrir(herramienta: dict, maestra: tk.Misc | None = None) -> None:
             VentanaPeriodo(maestra, herramienta)
         elif tipo == "observacion":
             VentanaObservacion(maestra, herramienta)
+        elif tipo == "personalidad":
+            VentanaPersonalidad(maestra, herramienta)
         elif tipo == "planificar":
             # Si el botón trae en «destino» el lanzador del asistente de IA, se abre directo; si no, la ventana de siempre.
             if destino.strip() and os.path.isfile(destino):
@@ -2133,6 +2143,85 @@ class VentanaClaveColegio(VentanaBase):
         self.aviso.configure(text=texto, fg=color)
         self.limpiar_botones()
         self.boton("Cerrar", self.destroy, principal=True)
+
+
+class VentanaVigilarObservaciones(VentanaBase):
+    """Elegir de qué cursos avisar cuando otro profesor registra una observación en el libro de clases.
+
+    Parte con los cursos del docente, que ya se conocen, y suma los demás del colegio apenas los lee de WebClass.
+    """
+
+    ANCHO = 440
+    OTROS = "Otros cursos del colegio"
+
+    def __init__(self, maestra):
+        super().__init__(maestra, "Avisos de observaciones",
+                         f"Marca los cursos que quieres seguir. Mientras la barra esté abierta, cada "
+                         f"{MINUTOS_VIGILAR_OBSERVACIONES} minutos mira el libro de clases y te avisa cuando otro profesor "
+                         "registra una observación en ellos. No avisa de las que ya estaban ni de las que registras tú.",
+                         icono="🔔", titulo_ventana="Avisos de observaciones")
+        self.guardada = False
+        elegidos = leer_preferencias().get("observaciones_cursos") or []
+        self.lista = ListaMarcable(self.cuerpo, alto_max=int(240 * self.escala))
+        self.lista.pack(fill="x")
+        mios = list(perfil_de_trabajo().get("curso_ids", {}))
+        for curso in mios:
+            self.lista.agregar(curso, curso, grupo="Mis cursos", marcado=curso in elegidos)
+        for curso in elegidos:
+            if curso not in mios:           # uno de los otros, elegido antes: que se vea aunque WebClass no responda
+                self.lista.agregar(curso, curso, grupo=self.OTROS, marcado=True)
+        self.aviso = tk.Label(self.cuerpo, text="Leyendo los demás cursos del colegio…", bg=COLOR_FONDO, fg=COLOR_TENUE,
+                              font=letra(9), anchor="w", justify="left", wraplength=self.ancho_texto())
+        self.aviso.pack(fill="x", pady=(8, 0))
+        self.ultima = tk.Label(self.cuerpo, text=self._texto_ultima_revision(), bg=COLOR_FONDO, fg=COLOR_TENUE,
+                               font=letra(9), anchor="w", justify="left", wraplength=self.ancho_texto())
+        self.ultima.pack(fill="x")
+        self.boton("Guardar", self._guardar, principal=True)
+        self.boton("Cancelar", self.destroy)
+        self.colocar()
+        orden = comando_webclass("observar", "--cursos")
+        self.en_segundo_plano(lambda: self._leer_cursos(orden), self._cursos_leidos)
+
+    @staticmethod
+    def _texto_ultima_revision() -> str:
+        estado = leer_json(OBSERVACIONES_VIGILADAS)
+        if estado.get("error"):
+            return f"La última revisión ({estado.get('revisado')}) no resultó: {estado['error']}"
+        return f"Última revisión: {estado['revisado']}." if estado.get("revisado") else ""
+
+    @staticmethod
+    def _leer_cursos(orden: list[str]) -> list[str]:
+        proceso = subprocess.run(orden, cwd=WEBCLASS, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                 timeout=SEGUNDOS_TOPE_REVISION, stdin=subprocess.DEVNULL,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                                 env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+        return [i["clave"] for i in map(parsear_item, proceso.stdout.splitlines()) if i and i["que"] == "curso"]
+
+    def _cursos_leidos(self, cursos, error) -> None:
+        if self.guardada:
+            return                         # ya eligió: que no se borre el «✓ Listo»
+        if error is not None or not cursos:
+            self.aviso.configure(text="No pude leer los demás cursos del colegio: por ahora puedes elegir entre los tuyos.")
+            return
+        for curso in cursos:
+            if curso not in self.lista.estado:
+                self.lista.agregar(curso, curso, grupo=self.OTROS, marcado=False)
+        self.aviso.configure(text="")
+        self.colocar()
+
+    def _guardar(self) -> None:
+        self.guardada = True
+        cursos = self.lista.marcadas()
+        self.maestra.preferencias = guardar_preferencias(observaciones_cursos=cursos)
+        registrar(f"avisos de observaciones: {', '.join(cursos) or 'ninguno'}")
+        revisar = getattr(self.maestra, "revisar_observaciones", None)
+        if callable(revisar):
+            revisar()                      # para anotar al tiro lo que ya tienen los cursos recién elegidos
+        self.aviso.configure(text=f"✓ Listo: te avisaré de las observaciones nuevas en {', '.join(cursos)}." if cursos
+                             else "✓ Listo: sin avisos de observaciones.", fg=COLOR_OK)
+        self.limpiar_botones()
+        self.boton("Cerrar", self.destroy, principal=True)
+        self.colocar()
 
 
 def ruta_de_registro(tipo: str) -> str:
@@ -3768,6 +3857,377 @@ class VentanaObservacion(tk.Toplevel):
 
     def destroy(self) -> None:
         self._cerrada = True
+        super().destroy()
+
+
+class VentanaPersonalidad(VentanaBase):
+    """El informe de personalidad alumna por alumna, en vez de la grilla de WebClass (un selector diminuto por celda:
+    1302 en un curso de 42 alumnas).
+
+    Se lee el curso entero una vez, sin escribir nada. Lo respondido queda en un borrador en este PC (no se pierde si se
+    cierra la ventana) y «Guardar en WebClass» envía solo lo que cambió, con vista previa. De cada alumna sale, si se
+    pide, su informe en Word. Teclado: ↑ ↓ entre conductas; 1 a 4 califican y pasan a la siguiente.
+    """
+
+    ANCHO = 900
+
+    def __init__(self, maestra, herramienta: dict):
+        super().__init__(maestra, "Informe de personalidad",
+                         "Responde alumna por alumna: ↑ ↓ para moverte entre conductas y 1 a 4 para calificar. Lo que "
+                         "respondes queda en este PC; «Guardar en WebClass» envía solo lo que cambió, con vista previa.",
+                         icono=herramienta.get("icono") or "🌱", titulo_ventana="Informe de personalidad")
+        self.herramienta = herramienta
+        self.encuesta: dict | None = None
+        self.borrador: dict = {"alumnas": {}}
+        self.actual = 0
+        self.filas: dict[str, tuple] = {}          # conducta -> (fila, número, {calificador: botón})
+        self.orden: list[str] = []
+        self._pedido: tuple | None = None
+        perfil = perfil_de_trabajo()
+        self.jefatura = perfil.get("jefatura") or ""
+        self.colegio = str(perfil.get("colegio") or "")
+        cursos = list(perfil.get("curso_ids", {}))
+        if self.jefatura in cursos:
+            cursos.insert(0, cursos.pop(cursos.index(self.jefatura)))
+
+        arriba = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
+        arriba.pack(fill="x")
+        tk.Label(arriba, text="Curso", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9)).pack(side="left")
+        self.curso = ttk.Combobox(arriba, values=cursos, state="readonly", width=7, style="Barra.TCombobox",
+                                  font=letra(10))
+        self.curso.pack(side="left", padx=(6, 14))
+        tk.Label(arriba, text="Periodo", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9)).pack(side="left")
+        self.periodo = ttk.Combobox(arriba, values=[], state="readonly", width=18, style="Barra.TCombobox",
+                                    font=letra(10))
+        self.periodo.pack(side="left", padx=(6, 0))
+        self.estado = tk.Label(arriba, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="e")
+        self.estado.pack(side="right")
+        self.curso.bind("<<ComboboxSelected>>", lambda _e: self._cargar())
+        self.periodo.bind("<<ComboboxSelected>>", lambda _e: self._cargar(self._periodo_elegido()))
+
+        medio = tk.Frame(self.cuerpo, bg=COLOR_FONDO)
+        medio.pack(fill="both", pady=(10, 0))
+        self.lista = tk.Listbox(medio, width=34, height=1, activestyle="none", exportselection=False, bd=0,
+                                highlightthickness=0, bg=COLOR_BOTON, fg=COLOR_TEXTO, font=letra(10),
+                                selectbackground=COLOR_ACENTO, selectforeground=COLOR_SOBRE_ACENTO)
+        self.lista.pack(side="left", fill="y")
+        self.lista.bind("<<ListboxSelect>>", lambda _e: self._elegida_en_lista())
+        derecha = tk.Frame(medio, bg=COLOR_FONDO)
+        derecha.pack(side="left", fill="both", expand=True, padx=(12, 0))
+        self.titulo_alumna = tk.Label(derecha, text="", bg=COLOR_FONDO, fg=COLOR_TEXTO, font=letra(12, "bold"),
+                                      anchor="w")
+        self.titulo_alumna.pack(fill="x")
+        self.leyenda = tk.Label(derecha, text="", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9), anchor="w")
+        self.leyenda.pack(fill="x")
+        marco = tk.Frame(derecha, bg=COLOR_BOTON)
+        marco.pack(fill="both", expand=True, pady=(6, 0))
+        alto = max(220, min(int(420 * self.escala), self.winfo_screenheight() - int(360 * self.escala)))
+        self.canvas = tk.Canvas(marco, bg=COLOR_BOTON, highlightthickness=0, bd=0, height=alto,
+                                width=int(540 * self.escala))
+        barra = BarraOscura(marco, command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=barra.set)
+        barra.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.interior = tk.Frame(self.canvas, bg=COLOR_BOTON)
+        dentro = self.canvas.create_window((0, 0), window=self.interior, anchor="nw")
+        self.interior.bind("<Configure>", lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(dentro, width=e.width))
+        self._rueda_en(self.canvas)
+        tk.Label(derecha, text="Observación del periodo (opcional)", bg=COLOR_FONDO, fg=COLOR_TENUE, font=letra(9),
+                 anchor="w").pack(fill="x", pady=(8, 2))
+        self.observacion = estilo_campo(tk.Text(derecha, height=3, wrap="word", font=letra(10), padx=6, pady=4))
+        self.observacion.pack(fill="x")
+        self.observacion.bind("<KeyRelease>", lambda _e: self._anotar_observacion())
+
+        self.boton("Siguiente ▶", self._siguiente, principal=True)
+        self.boton("◀ Anterior", self._anterior)
+        self.boton("Guardar en WebClass…", self._guardar_en_webclass)
+        self.boton("Word: todas", lambda: self._informes(todas=True))
+        self.boton("Word: esta alumna", lambda: self._informes(todas=False))
+        self._ajustar_alto()
+        self.colocar()
+        preferencias = leer_preferencias()
+        elegido = preferencias.get("personalidad_curso")
+        self.curso.set(elegido if elegido in cursos else (cursos[0] if cursos else ""))
+        if self.curso.get():
+            self._cargar(preferencias.get("personalidad_periodo") if elegido == self.curso.get() else None)
+        else:
+            self.estado.configure(text="Tu perfil no tiene cursos: actualízalos en ⚙ Ajustes → Profesor.")
+
+    # ------------------------------------------------------------- leer
+    def _ruta_borrador(self) -> str:
+        e = self.encuesta
+        return os.path.join(CARPETA_PERSONALIDAD, f"borrador{_sufijo}_{e['curso']}_{e['periodo']}.json")
+
+    def _guardar_borrador(self) -> None:
+        if self.encuesta is None:
+            return
+        try:
+            os.makedirs(CARPETA_PERSONALIDAD, exist_ok=True)
+            escribir_atomico(self._ruta_borrador(), json.dumps(self.borrador, ensure_ascii=False))
+        except OSError as exc:
+            registrar("no se pudo guardar el borrador del informe de personalidad", str(exc))
+
+    def _periodo_elegido(self) -> str | None:
+        nombres = {n: i for i, n in (self.encuesta or {}).get("periodos", [])}
+        return nombres.get(self.periodo.get())
+
+    def _cargar(self, periodo: str | None = None) -> None:
+        """Lee el curso y el periodo de WebClass (solo lectura, unos 15 segundos)."""
+        curso = self.curso.get()
+        if not curso:
+            return
+        self._guardar_borrador()
+        self._pedido = (curso, periodo)
+        self.estado.configure(text=f"Leyendo {curso} en WebClass… (unos 15 segundos)", fg=COLOR_TENUE)
+        salida = os.path.join(CARPETA_PERSONALIDAD, f"encuesta{_sufijo}_{curso}.json")
+        orden = comando_webclass("personalidad", "--curso", curso, "--salida", salida,
+                                 *(["--periodo", periodo] if periodo else []))
+
+        def trabajo() -> dict:
+            os.makedirs(CARPETA_PERSONALIDAD, exist_ok=True)
+            proceso = subprocess.run(orden, cwd=WEBCLASS, capture_output=True, text=True, encoding="utf-8",
+                                     errors="replace", timeout=SEGUNDOS_TOPE_REVISION, stdin=subprocess.DEVNULL,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                                     env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+            if proceso.returncode:
+                ultima = (proceso.stderr or proceso.stdout).strip().splitlines()[-1:]
+                raise RuntimeError((ultima[0] if ultima else "no respondió").removeprefix("Error: ")[:160])
+            return leer_json(salida)
+        self.en_segundo_plano(trabajo, lambda encuesta, error, p=self._pedido: self._cargada(p, encuesta, error))
+
+    def _cargada(self, pedido: tuple, encuesta: dict | None, error) -> None:
+        if pedido != self._pedido:
+            return                          # mientras leía se eligió otro curso o periodo
+        if error is not None or not (encuesta or {}).get("alumnas"):
+            self.estado.configure(text=f"No pude leer {pedido[0]}: {error or 'no trae alumnas'}", fg=COLOR_ERROR)
+            return
+        self.encuesta = encuesta
+        self.periodo.configure(values=[n for _i, n in encuesta["periodos"]])
+        self.periodo.set(encuesta["periodo_nombre"])
+        guardar_preferencias(personalidad_curso=encuesta["curso"], personalidad_periodo=encuesta["periodo"])
+        self.borrador = ip.limpiar_borrador(encuesta, leer_json(self._ruta_borrador()))
+        self._guardar_borrador()
+        self.leyenda.configure(text="   ".join(f"{n}  {c['sigla']} = {c['nombre']}"
+                                              for n, c in enumerate(encuesta["calificadores"], 1)))
+        self._armar_formulario()
+        self.lista.delete(0, "end")
+        for alumna in encuesta["alumnas"]:
+            self.lista.insert("end", self._texto_en_lista(alumna))
+        alumnas = encuesta["alumnas"]
+        self._ir_a(next((i for i, a in enumerate(alumnas) if not ip.revisada(a, self.borrador)), 0))
+        self._ajustar_alto()
+        self.colocar()
+
+    # ------------------------------------------------------------- formulario
+    def _rueda_en(self, widget) -> None:
+        widget.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"), add="+")
+
+    def _armar_formulario(self) -> None:
+        """Una fila por conducta, agrupadas por área, con un botón por calificación. Es igual para todas las alumnas."""
+        for hijo in self.interior.winfo_children():
+            hijo.destroy()
+        self.filas.clear()
+        self.orden = []
+        calificadores = self.encuesta["calificadores"]
+        ancho_texto = int((540 - 70 - 52 * len(calificadores)) * self.escala)
+        for area in self.encuesta["areas"]:
+            cabecera = tk.Label(self.interior, text=area["nombre"], bg=COLOR_BOTON, fg=COLOR_ACENTO,
+                                font=letra(8, "bold"), anchor="w")
+            cabecera.pack(fill="x", padx=10, pady=(10, 2))
+            self._rueda_en(cabecera)
+            for conducta in area["conductas"]:
+                ident = conducta["id"]
+                fila = tk.Frame(self.interior, bg=COLOR_BOTON, takefocus=True, highlightthickness=1,
+                                highlightbackground=COLOR_BOTON, highlightcolor=COLOR_ACENTO)
+                fila.pack(fill="x", padx=4, pady=1)
+                numero = tk.Label(fila, text=str(conducta["numero"]), width=3, bg=COLOR_BOTON, fg=COLOR_TENUE,
+                                  font=letra(9), anchor="e")
+                numero.pack(side="left", anchor="n", pady=5)
+                botones = {}
+                for c in reversed(calificadores):
+                    b = tk.Label(fila, text=c["sigla"], width=4, font=letra(9, "bold"), cursor="hand2", pady=4)
+                    b.pack(side="right", padx=2, pady=2)
+                    b.bind("<Button-1>", lambda _e, k=ident, v=c["id"]: self._elegir(k, v))
+                    botones[c["id"]] = b
+                texto = tk.Label(fila, text=conducta["nombre"], bg=COLOR_BOTON, fg=COLOR_TEXTO, font=letra(10),
+                                 anchor="w", justify="left", wraplength=ancho_texto)
+                texto.pack(side="left", fill="x", expand=True, padx=(6, 4), pady=4)
+                for widget in (fila, numero, texto):
+                    widget.bind("<Button-1>", lambda _e, f=fila: f.focus_set())
+                for widget in (fila, numero, texto, *botones.values()):
+                    self._rueda_en(widget)
+                fila.bind("<FocusIn>", lambda _e, f=fila: self._mostrar_fila(f))
+                fila.bind("<Down>", lambda _e, k=ident: (self._mover(k, 1), "break")[1])
+                fila.bind("<Up>", lambda _e, k=ident: (self._mover(k, -1), "break")[1])
+                for n, c in enumerate(calificadores, 1):
+                    for tecla in (str(n), f"<KP_{n}>"):
+                        fila.bind(tecla, lambda _e, k=ident, v=c["id"]: (self._elegir(k, v, avanzar=True), "break")[1])
+                self.filas[ident] = (fila, numero, botones)
+                self.orden.append(ident)
+
+    def _mostrar_fila(self, fila: tk.Frame) -> None:
+        """Que la conducta con el foco quede a la vista."""
+        self.interior.update_idletasks()
+        total = max(self.interior.winfo_height(), 1)
+        inicio, fin = self.canvas.yview()
+        arriba, abajo = fila.winfo_y(), fila.winfo_y() + fila.winfo_height()
+        if arriba < inicio * total:
+            self.canvas.yview_moveto(max(0, arriba - 30) / total)
+        elif abajo > fin * total:
+            self.canvas.yview_moveto((abajo - self.canvas.winfo_height() + 10) / total)
+
+    def _mover(self, conducta: str, paso: int) -> None:
+        i = self.orden.index(conducta) + paso
+        if 0 <= i < len(self.orden):
+            self.filas[self.orden[i]][0].focus_set()
+
+    def _alumna(self) -> dict:
+        return self.encuesta["alumnas"][self.actual]
+
+    def _texto_en_lista(self, alumna: dict) -> str:
+        marca = "●" if ip.tiene_cambios(alumna, self.borrador) else "✓" if ip.revisada(alumna, self.borrador) else " "
+        return f"{marca} {alumna['numero']:>2}. {alumna['nombre']}"
+
+    def _pintar(self) -> None:
+        """Los botones de la alumna actual (el elegido, encendido; lo que cambió respecto de WebClass, con un punto)."""
+        alumna = self._alumna()
+        valores = ip.valores_de(alumna, self.borrador)
+        for conducta, (_fila, numero, botones) in self.filas.items():
+            for calificador, boton in botones.items():
+                elegido = valores.get(conducta) == calificador
+                boton.configure(bg=COLOR_ACENTO if elegido else COLOR_FONDO,
+                                fg=COLOR_SOBRE_ACENTO if elegido else COLOR_TENUE)
+            cambio = valores.get(conducta) != alumna["valores"].get(conducta)
+            texto = numero.cget("text").lstrip("●")
+            numero.configure(text=("●" if cambio else "") + texto, fg=COLOR_ACENTO if cambio else COLOR_TENUE)
+        self._refrescar_en_lista(self.actual)
+        self.lista.selection_clear(0, "end")
+        self.lista.selection_set(self.actual)
+        self.lista.see(self.actual)
+        self.estado.configure(text=ip.avance(self.encuesta, self.borrador), fg=COLOR_TENUE)
+
+    def _refrescar_en_lista(self, indice: int) -> None:
+        self.lista.delete(indice)
+        self.lista.insert(indice, self._texto_en_lista(self.encuesta["alumnas"][indice]))
+
+    def _ajustar_alto(self) -> None:
+        """Que la ventana quepa en la pantalla (en los notebook del colegio mide 720 px): lo que sobra se le quita al
+        área de las conductas, que tiene su propio desplazamiento."""
+        barra = self.maestra if hasattr(self.maestra, "_area") else None
+        _izq, arriba, _der, abajo = barra._area() if barra else (0, 0, 0, self.winfo_screenheight() - 48)
+        self.update_idletasks()
+        sobra = self.winfo_reqheight() - (abajo - arriba - 16)
+        if sobra > 0:
+            self.canvas.configure(height=max(140, int(self.canvas.cget("height")) - sobra))
+
+    def _ir_a(self, indice: int) -> None:
+        if self.encuesta and self.actual < len(self.encuesta["alumnas"]) and self.lista.size():
+            self._refrescar_en_lista(self.actual)          # la que se deja: con su ✓ o su ● al día
+        self.actual = max(0, min(indice, len(self.encuesta["alumnas"]) - 1))
+        alumna = self._alumna()
+        self.titulo_alumna.configure(text=f"{alumna['numero']}. {alumna['nombre']}    "
+                                          f"({self.actual + 1} de {len(self.encuesta['alumnas'])})")
+        self.observacion.delete("1.0", "end")
+        self.observacion.insert("1.0", ip.observacion_de(alumna, self.borrador))
+        self._pintar()
+        self.canvas.yview_moveto(0)
+        if self.orden:
+            self.filas[self.orden[0]][0].focus_set()
+
+    # ------------------------------------------------------------- responder
+    def _elegir(self, conducta: str, calificador: str, avanzar: bool = False) -> None:
+        ip.responder(self.borrador, self._alumna(), conducta, calificador)
+        self._guardar_borrador()
+        self._pintar()
+        if avanzar:
+            self._mover(conducta, 1)
+
+    def _anotar_observacion(self) -> None:
+        if self.encuesta is None:
+            return
+        ip.responder(self.borrador, self._alumna(), observacion=self.observacion.get("1.0", "end"))
+        self._pintar()
+
+    def _elegida_en_lista(self) -> None:
+        elegida = self.lista.curselection()
+        if self.encuesta is not None and elegida and elegida[0] != self.actual:
+            self._guardar_borrador()
+            self._ir_a(elegida[0])
+
+    def _siguiente(self) -> None:
+        if self.encuesta is None:
+            return
+        ip.responder(self.borrador, self._alumna(), revisada=True)
+        self._guardar_borrador()
+        if self.actual + 1 < len(self.encuesta["alumnas"]):
+            self._ir_a(self.actual + 1)
+        else:
+            self._pintar()
+            self.estado.configure(text=f"Era la última alumna · {ip.avance(self.encuesta, self.borrador)}")
+
+    def _anterior(self) -> None:
+        if self.encuesta is not None and self.actual > 0:
+            self._guardar_borrador()
+            self._ir_a(self.actual - 1)
+
+    # ------------------------------------------------------------- guardar e informes
+    def _guardar_en_webclass(self) -> None:
+        if self.encuesta is None:
+            return
+        datos = ip.cambios(self.encuesta, self.borrador)
+        if not datos["alumnas"]:
+            self.estado.configure(text="No hay nada que guardar: todo está igual que en WebClass.", fg=COLOR_TENUE)
+            return
+        self._guardar_borrador()
+        archivo = os.path.join(CARPETA_PERSONALIDAD, "cambios.json")
+        escribir_atomico(archivo, json.dumps(datos, ensure_ascii=False))
+        previa = {**self.herramienta, "tipo": "webclass", "vista_previa": "simular",
+                  "destino": f'personalidad --datos "{archivo}"', "confirmar": ""}
+        maestra = self.maestra
+        self.destroy()                     # el borrador queda: al volver a abrir, lo ya guardado se descarta solo
+        VistaPrevia(maestra, previa,
+                    lambda claves, todas: abrir({**previa, "_confirmado": True, "_seleccion": (claves, todas)}, maestra))
+
+    def _informes(self, todas: bool) -> None:
+        """El informe en Word de esta alumna o de todas, con lo que se ve aquí (también lo aún no guardado)."""
+        if self.encuesta is None:
+            return
+        encuesta, borrador = self.encuesta, json.loads(json.dumps(self.borrador))
+        alumnas = encuesta["alumnas"] if todas else [self._alumna()]
+        carpeta = ip.carpeta_de_informes(os.path.join(CASA, "Documents"), encuesta)
+        colegio = "" if self.colegio.isdigit() else self.colegio
+        jefatura = encuesta["curso"] == self.jefatura
+        sin_guardar = any(ip.tiene_cambios(a, borrador) for a in alumnas)
+        self.estado.configure(text=f"Creando {len(alumnas)} informe{'s' if len(alumnas) != 1 else ''} en Word…",
+                              fg=COLOR_TENUE)
+
+        def trabajo() -> list[str]:
+            return [ip.crear_informe(os.path.join(carpeta, ip.nombre_de_archivo(a)), encuesta, a,
+                                     ip.valores_de(a, borrador), ip.observacion_de(a, borrador), colegio,
+                                     NOMBRE_COMPLETO, jefatura) for a in alumnas]
+
+        def listo(creados, error) -> None:
+            if error is not None:
+                motivo = ("falta el complemento python-docx (se instala con el planificador)"
+                          if isinstance(error, ImportError) else str(error)[:160])
+                self.estado.configure(text=f"No pude crear el informe: {motivo}", fg=COLOR_ERROR)
+                return
+            self.estado.configure(text=f"✓ {len(creados)} informe{'s' if len(creados) != 1 else ''} en Documentos"
+                                       + (" (incluyen cambios que aún no guardas en WebClass)" if sin_guardar else ""),
+                                  fg=COLOR_OK)
+            try:
+                os.startfile(creados[0] if len(creados) == 1 else carpeta)
+            except OSError as exc:
+                registrar("no se pudo abrir el informe de personalidad", str(exc))
+        self.en_segundo_plano(trabajo, listo)
+
+    def destroy(self) -> None:
+        try:
+            self._anotar_observacion()
+            self._guardar_borrador()
+        except tk.TclError:
+            pass
         super().destroy()
 
 
@@ -5554,6 +6014,8 @@ class VentanaAjustes(VentanaBase):
         if PERFIL:
             fila_accion(panel, "🔄  Actualizar mis cursos y unidades (desde Webclass)", self._actualizar_cursos)
             fila_accion(panel, "📆  Días sin clases (feriados, vacaciones)…", self._sin_clases)
+            fila_accion(panel, "🔔  Avisos de observaciones del libro (elegir cursos)…",
+                        lambda: VentanaVigilarObservaciones(self.barra))
         fila_accion(panel, "🏫  Clave del colegio (avisos y claves de IA)…", lambda: VentanaClaveColegio(self.barra))
         if PERFIL and equipo_compartido():
             con_pin = tiene_pin(ruta_pin(rutas.PERSONAL, PERFIL))
@@ -5855,6 +6317,7 @@ class Barra(RAIZ_TK):
         self._marcos_resalte: list[tk.Frame] = []
         self._revisando = False      # antes de construir: _actualizar_saludo lo consulta
         self._horario_pedido = False  # «Mi horario» ya se pidió a WebClass en esta sesión (sin asistente)
+        self._revisando_observaciones = False
         # Equipo con varios profesores: parte bloqueada hasta que alguien escriba su PIN (así nadie usa por error la
         # cuenta del profesor anterior). Si se reabrió sola con alguien recién desbloqueado, no lo vuelve a pedir.
         self.bloqueada = debe_partir_bloqueada()
@@ -5895,6 +6358,7 @@ class Barra(RAIZ_TK):
         self.after(2500, self._tour_inicial)
         self.after(5000, self._buscar_periodica)    # versión nueva: al rato de abrir y después cada 6 horas
         self.after(4000, self._vigilar_colegio)     # avisos y claves de IA del colegio: al rato y cada 3 minutos
+        self.after(45000, self._vigilar_observaciones)  # después de la revisión del libro, para no entrar dos veces a la vez
         if self.preferencias.get("planificador_listo"):
             self.after(8000, preparar_planificador)  # un rato después: que la barra termine de abrir primero
         if not DOCENTES:                             # primer uso: configurar la cuenta sin consola
@@ -6104,10 +6568,14 @@ class Barra(RAIZ_TK):
         self._pintar_avisos()
 
     def avisos_de_hoy(self) -> list[dict]:
+        """Lo que muestra la tarjeta: lo del colegio y las observaciones nuevas, de lo más nuevo a lo más antiguo."""
         if not PERFIL:
             return []
-        return colegio.para_mostrar(colegio.contenido_guardado(BUZON_COLEGIO), rut_del_docente(), NOMBRE_COMPLETO,
-                                    datetime.date.today(), colegio.leer_leidos(AVISOS_LEIDOS))
+        leidos = colegio.leer_leidos(AVISOS_LEIDOS)
+        del_colegio = colegio.para_mostrar(colegio.contenido_guardado(BUZON_COLEGIO), rut_del_docente(), NOMBRE_COMPLETO,
+                                           datetime.date.today(), leidos)
+        observaciones = avisos_de_observaciones(leer_json(OBSERVACIONES_VIGILADAS), leidos)
+        return sorted(del_colegio + observaciones, key=lambda m: m.get("creado", ""), reverse=True)
 
     def _pintar_avisos(self) -> None:
         marco = getattr(self, "tarjeta_avisos", None)
@@ -6126,8 +6594,7 @@ class Barra(RAIZ_TK):
         for m in avisos[:3]:
             fila = tk.Frame(marco, bg=COLOR_BOTON)
             fila.pack(fill="x", pady=(4, 0))
-            quien = ("Aviso de hoy" if m["tipo"] == "aviso" else "Mensaje") + (f" de {m['de']}" if m.get("de") else "")
-            tk.Label(fila, text=quien, bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9), anchor="w").pack(
+            tk.Label(fila, text=titulo_de_aviso(m), bg=COLOR_BOTON, fg=COLOR_TENUE, font=letra(9), anchor="w").pack(
                 fill="x", padx=8, pady=(5, 0))
             tk.Label(fila, text=m["texto"], bg=COLOR_BOTON, fg=COLOR_TEXTO, font=letra(10), anchor="w", justify="left",
                      wraplength=self._envoltura_avisos - int(20 * self.escala)).pack(fill="x", padx=8)
@@ -6182,13 +6649,46 @@ class Barra(RAIZ_TK):
         nuevos = [m for m in self.avisos_de_hoy() if m["id"] not in avisados]
         if not nuevos:
             return
+        del_libro = sum(m["tipo"] == "observacion" for m in nuevos)
         if len(nuevos) == 1:
-            m = nuevos[0]
-            titulo = ("Aviso de hoy" if m["tipo"] == "aviso" else "Mensaje") + (f" de {m['de']}" if m.get("de") else "")
+            titulo = titulo_de_aviso(nuevos[0])
+        elif del_libro == len(nuevos):
+            titulo = f"{del_libro} observaciones nuevas en el libro"
         else:
-            titulo = f"{len(nuevos)} avisos nuevos del colegio"
+            titulo = f"{len(nuevos)} avisos nuevos" + ("" if del_libro else " del colegio")
         Aviso(self, "proceso", titulo, nuevos[0]["texto"][:140], al_pulsar=self._desplegar, segundos=12)
         self.preferencias = guardar_preferencias(avisos_avisados=(avisados + [m["id"] for m in nuevos])[-200:])
+
+    # ------------------------------------------------- observaciones del libro
+    def _vigilar_observaciones(self) -> None:
+        self.after(MINUTOS_VIGILAR_OBSERVACIONES * 60 * 1000, self._vigilar_observaciones)
+        self.revisar_observaciones()
+
+    def revisar_observaciones(self) -> None:
+        """Busca observaciones nuevas en los cursos elegidos, en un proceso aparte y sin escribir nada en WebClass.
+
+        Sin cursos elegidos no entra a WebClass. Lo nuevo aparece en la tarjeta «Avisos» y en un cartelito.
+        """
+        cursos = leer_preferencias().get("observaciones_cursos") or []
+        if not (PERFIL and cursos) or self._revisando_observaciones:
+            return
+        self._revisando_observaciones = True
+        salida = OBSERVACIONES_VIGILADAS       # por si cambian de docente mientras corre: queda en el archivo correcto
+        orden = comando_webclass("observar", "--vigilar", ",".join(cursos), "--salida", salida)
+
+        def trabajo() -> None:
+            proceso = subprocess.run(orden, cwd=WEBCLASS, capture_output=True, timeout=SEGUNDOS_TOPE_REVISION,
+                                     stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if proceso.returncode:             # se cayó antes de poder anotar el error en su archivo
+                raise RuntimeError(proceso.stderr.decode("utf-8", errors="replace")[-200:])
+
+        def listo(_resultado, error) -> None:
+            self._revisando_observaciones = False
+            problema = str(error)[:200] if error is not None else leer_json(salida).get("error")
+            if problema:
+                registrar("no se pudieron revisar las observaciones", problema)
+            self.refrescar_avisos()
+        en_segundo_plano(self, trabajo, listo)
 
     # ------------------------------------------------------- firmas pendientes
     def _vigilar_firmas(self) -> None:

@@ -14,6 +14,7 @@ webclass.exe no necesita tener Python instalado.
     webclass.exe libro --informe       estado del mes, sin escribir nada
     webclass.exe horario --ver         horario semanal de clases
     webclass.exe observar --datos obs.json   registra una observación a varias alumnas
+    webclass.exe personalidad --curso 5BA --salida p.json   lee el informe de personalidad del curso
     webclass.exe firmas                revisa qué quedó sin firmar hoy
 
 Cada subcomando acepta sus propias opciones: `webclass.exe asignar --ayuda`.
@@ -34,6 +35,7 @@ import probar_acceso
 import subir_carpeta
 import webclass_libro
 import webclass_observaciones
+import webclass_personalidad
 import webclass_planificacion
 import webclass_recursos
 import webclass_tareas
@@ -48,6 +50,7 @@ ORDENES = {
     "libro": (webclass_libro, "Libro de clases: OA, leccionario y asistencia"),
     "horario": (horario_semana, "Arma el horario semanal"),
     "observar": (webclass_observaciones, "Registra observaciones de estudiantes"),
+    "personalidad": (webclass_personalidad, "Lee y guarda el informe de personalidad del curso"),
     "planificar": (webclass_planificacion, "Crea clases en bloque, importa planillas y marca OA/DUA"),
     "correo": (correo_pie, "Envía guías al equipo PIE por correo"),
     "firmas": (estado_firmas, "Revisa qué quedó sin firmar hoy"),

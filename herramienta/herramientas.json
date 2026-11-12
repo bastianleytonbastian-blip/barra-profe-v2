@@ -62,6 +62,14 @@
   },
   {
     "grupo": "Webclass",
+    "nombre": "Informe de personalidad",
+    "icono": "🌱",
+    "tipo": "personalidad",
+    "destino": "",
+    "ayuda": "Responde la encuesta de personalidad alumna por alumna y saca el informe en Word de cada una"
+  },
+  {
+    "grupo": "Webclass",
     "nombre": "Planificar",
     "icono": "🗓️",
     "tipo": "planificar",

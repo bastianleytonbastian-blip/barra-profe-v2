@@ -3,6 +3,16 @@
 Regla: cada cambio que se reparta sube el número de `VERSION` y agrega una línea aquí.
 Formato del número: MAYOR.MENOR.PARCHE (MAYOR: cambia cómo se usa · MENOR: función nueva · PARCHE: arreglo).
 
+## 2.12.0
+- Avisos de observaciones: elige cursos en ⚙ Ajustes → Profesor → «Avisos de observaciones del libro» (los tuyos o
+  cualquiera del colegio). Mientras la barra esté abierta, cada 10 minutos mira el libro de clases (solo lectura) y avisa
+  cuando otro profesor registra una observación: sale un cartelito y queda en la tarjeta «📣 Avisos» hasta marcarla
+  «Listo ✓». No avisa de las que ya estaban ni de las propias, y la misma observación a varias alumnas se avisa una vez.
+- Botón nuevo «Informe de personalidad»: en vez de la grilla de WebClass (un selector diminuto por celda), se responde
+  alumna por alumna, con las conductas agrupadas por área y un botón por calificación (o ↑ ↓ y 1 a 4 con el teclado),
+  más la observación del periodo. Lo respondido queda en el PC hasta «Guardar en WebClass», que envía solo lo que cambió
+  con vista previa y lo comprueba. «Word» crea el informe de una alumna o de todo el curso en Documentos.
+
 ## 2.11.4
 - Al subir recursos aparecen Religión, Inglés, Educación Física y Salud, Música y Artes Visuales (códigos leídos de
   WebClass), también para quien no ha actualizado sus cursos.

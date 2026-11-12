@@ -194,7 +194,7 @@ def planificador_en_botones(personal: str | None = None) -> bool:
 
 # Botones de la plantilla que se suman a la copia personal si faltan. «Planificar» y «Planificar en bloque» también:
 # quien instaló antes de que existieran (o los perdió) nunca los recibía, porque solo se convertía uno que ya estuviera.
-BOTONES_NUEVOS = ("Planificar", "Planificar en bloque", "Escala de notas", "Días sin clases")
+BOTONES_NUEVOS = ("Planificar", "Planificar en bloque", "Escala de notas", "Días sin clases", "Informe de personalidad")
 
 
 def botones_nuevos_en_propios(personal: str | None = None) -> list[str]:

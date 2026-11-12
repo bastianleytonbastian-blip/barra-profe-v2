@@ -62,6 +62,7 @@ class VentanaBarra(unittest.TestCase):
         # Buzón del colegio: archivos en la carpeta temporal, sin GitHub y sin tocar el llavero de Windows.
         self.mod["BUZON_COLEGIO"] = os.path.join(carpeta, "colegio.json")
         self.mod["AVISOS_LEIDOS"] = os.path.join(carpeta, "avisos_leidos.json")
+        self.mod["OBSERVACIONES_VIGILADAS"] = os.path.join(carpeta, "observaciones_vigiladas.json")
         self.codigo_colegio = ""
         self.publicados = []
 
@@ -2095,6 +2096,242 @@ class VentanaBarra(unittest.TestCase):
         self._esperar(lambda: "Guardada" in v.aviso.cget("text"))
         self.assertEqual(self.codigo_colegio, "tizalunesguitarravolcan")
         v.destroy()
+
+    # ------------------------------------------------------- observaciones del libro
+    def _observaciones(self, *nuevas):
+        with open(self.mod["OBSERVACIONES_VIGILADAS"], "w", encoding="utf-8") as f:
+            json.dump({"revisado": "04/11/2026 10:00", "error": "", "cursos": {}, "nuevas": list(nuevas)}, f)
+
+    OBSERVACION = {"id": "obs-1", "curso": "5BA", "tipo": "Negativa", "alumnas": ["Ana Rios"], "profesor": "Luz Soto",
+                   "asignatura": "Música", "fecha": "04-11-2026", "texto": "Llegó tarde", "creado": "2026-11-04 10:00"}
+
+    def test_una_observacion_nueva_se_ve_avisa_una_vez_y_se_marca_lista(self):
+        if not self.mod["PERFIL"]:
+            self.skipTest("este PC no tiene un profesor configurado")
+        b = self.barra
+        self._observaciones(self.OBSERVACION)
+        avisos = []
+        with mock.patch.dict(self.mod, {"Aviso": lambda barra, estado, titulo, detalle, **k: avisos.append((titulo, detalle))}):
+            b.refrescar_avisos()
+            b.refrescar_avisos()                              # lo ya avisado no vuelve a saltar
+        self.assertEqual(avisos, [("Observación negativa · 5BA de Luz Soto", "Ana Rios: Llegó tarde")])
+        texto = self._textos(b.tarjeta_avisos)
+        self.assertIn("📣 AVISOS · 1", texto)
+        self.assertIn("Ana Rios: Llegó tarde", texto)
+        b.marcar_aviso_leido("obs-1")
+        self.assertFalse(b.tarjeta_avisos.winfo_manager(), "con «Listo» deja de ocupar lugar")
+
+    def test_varias_observaciones_nuevas_avisan_en_un_solo_cartelito(self):
+        if not self.mod["PERFIL"]:
+            self.skipTest("este PC no tiene un profesor configurado")
+        self._observaciones(self.OBSERVACION, {**self.OBSERVACION, "id": "obs-2", "texto": "Otra"})
+        avisos = []
+        with mock.patch.dict(self.mod, {"Aviso": lambda barra, estado, titulo, detalle, **k: avisos.append(titulo)}):
+            self.barra.refrescar_avisos()
+        self.assertEqual(avisos, ["2 observaciones nuevas en el libro"])
+
+    def test_con_la_barra_bloqueada_no_salta_el_cartelito(self):
+        if not self.mod["PERFIL"]:
+            self.skipTest("este PC no tiene un profesor configurado")
+        self._observaciones(self.OBSERVACION)
+        self.barra.bloqueada = True
+        avisos = []
+        with mock.patch.dict(self.mod, {"Aviso": lambda *a, **k: avisos.append(a)}):
+            self.barra.refrescar_avisos()
+        self.assertEqual(avisos, [], "con el PIN puesto puede haber otro profesor frente al PC")
+
+    def test_sin_cursos_elegidos_no_entra_a_webclass(self):
+        pedidos = []
+        self.mod["comando_webclass"] = lambda *a, **k: pedidos.append(a) or [sys.executable, "-c", "pass"]
+        self.barra.revisar_observaciones()
+        self.assertEqual(pedidos, [])
+
+    def test_revisar_observaciones_pide_los_cursos_elegidos_y_muestra_lo_nuevo(self):
+        if not self.mod["PERFIL"]:
+            self.skipTest("este PC no tiene un profesor configurado")
+        pedidos = []
+        self.mod["comando_webclass"] = lambda *a, **k: pedidos.append(a) or [sys.executable, "-c", "pass"]
+        self.mod["guardar_preferencias"](observaciones_cursos=["5BA", "6BB"])
+        self._observaciones(self.OBSERVACION)
+        b = self.barra
+        with mock.patch.dict(self.mod, {"Aviso": lambda *a, **k: None}):
+            b.revisar_observaciones()
+            b.revisar_observaciones()                         # sigue corriendo la anterior: no se lanza otra
+            self._esperar(lambda: not b._revisando_observaciones)
+        self.assertEqual(pedidos, [("observar", "--vigilar", "5BA,6BB", "--salida", self.mod["OBSERVACIONES_VIGILADAS"])])
+        self.assertIn("Llegó tarde", self._textos(b.tarjeta_avisos))
+
+    def test_si_el_proceso_se_cae_queda_en_el_registro(self):
+        if not self.mod["PERFIL"]:
+            self.skipTest("este PC no tiene un profesor configurado")
+        self.mod["comando_webclass"] = lambda *a, **k: [sys.executable, "-c", "import sys; sys.exit('se cayo')"]
+        self.mod["guardar_preferencias"](observaciones_cursos=["5BA"])
+        registros = []
+        with mock.patch.dict(self.mod, {"registrar": lambda *a: registros.append(a)}):
+            self.barra.revisar_observaciones()
+            self._esperar(lambda: not self.barra._revisando_observaciones)
+        self.assertTrue(any("se cayo" in str(r) for r in registros), registros)
+
+    def _ventana_de_cursos(self, cursos=("4MB", "5BA")):
+        lineas = "".join(f"print('##ITEM ' + {json.dumps(json.dumps(dict(clave=c, estado='propuesto', titulo=c, que='curso')))});"
+                         for c in cursos)
+        self.mod["comando_webclass"] = lambda *a, **k: [sys.executable, "-c", lineas]
+        return self.mod["VentanaVigilarObservaciones"](self.barra)
+
+    def test_elegir_cursos_incluye_los_del_colegio_y_guarda_la_preferencia(self):
+        v = self._ventana_de_cursos()
+        self._esperar(lambda: "4MB" in v.lista.estado)
+        self.assertIn("OTROS CURSOS DEL COLEGIO", self._textos(v))
+        self.assertEqual(v.lista.marcadas(), [], "nadie queda vigilando nada sin elegirlo")
+        v.lista.fijar("4MB", True)
+        v._guardar()
+        self.assertEqual(self.mod["leer_preferencias"]()["observaciones_cursos"], ["4MB"])
+        self.assertIn("4MB", v.aviso.cget("text"))
+        v.destroy()
+        otra = self._ventana_de_cursos(cursos=())               # WebClass no responde: lo ya elegido se sigue viendo
+        self.assertEqual(otra.lista.marcadas(), ["4MB"])
+        self._esperar(lambda: "No pude leer" in otra.aviso.cget("text"))
+        otra.destroy()
+
+    def test_la_ventana_dice_si_la_ultima_revision_fallo(self):
+        with open(self.mod["OBSERVACIONES_VIGILADAS"], "w", encoding="utf-8") as f:
+            json.dump({"revisado": "04/11/2026 10:00", "error": "sin internet"}, f)
+        v = self._ventana_de_cursos(cursos=())
+        self.assertIn("sin internet", v.ultima.cget("text"))
+        v.destroy()
+
+    def test_ajustes_ofrece_los_avisos_de_observaciones(self):
+        if not self.mod["PERFIL"]:
+            self.skipTest("este PC no tiene un profesor configurado")
+        ajustes = self._ajustes("Profesor")
+        self.assertIn("Avisos de observaciones", self._textos(ajustes))
+        ajustes.destroy()
+
+    # ------------------------------------------------------- informe de personalidad
+    def _ventana_personalidad(self, falla=""):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from test_personalidad import encuesta_de_prueba
+        fuente = os.path.join(self.carpeta, "encuesta_fuente.json")
+        with open(fuente, "w", encoding="utf-8") as f:
+            json.dump(encuesta_de_prueba(), f)
+        self.pedidos_personalidad = []
+
+        def comando(*a, **_k):
+            self.pedidos_personalidad.append(a)
+            if falla:
+                return [sys.executable, "-c", f"import sys; sys.exit({'Error: ' + falla!r})"]
+            return [sys.executable, "-c", f"import shutil; shutil.copy({fuente!r}, {a[a.index('--salida') + 1]!r})"]
+        self.enterContext(mock.patch.dict(self.mod, {
+            "comando_webclass": comando, "CASA": self.carpeta,
+            "CARPETA_PERSONALIDAD": os.path.join(self.carpeta, "personalidad"),
+            "perfil_de_trabajo": lambda: {"curso_ids": {"6BB": 1, "5BA": 237559}, "jefatura": "5BA",
+                                          "colegio": "Colegio Ejemplo"}}))
+        return self._abrir_personalidad(esperar=not falla)
+
+    def _abrir_personalidad(self, esperar=True):
+        v = self.mod["VentanaPersonalidad"](self.barra, {"nombre": "Informe de personalidad", "icono": "🌱"})
+        if esperar:
+            self._esperar(lambda: v.encuesta is not None)
+        return v
+
+    def test_personalidad_parte_por_la_jefatura_y_se_responde_con_el_teclado(self):
+        v = self._ventana_personalidad()
+        self.assertEqual(self.pedidos_personalidad[0][:3], ("personalidad", "--curso", "5BA"))
+        self.assertNotIn("--periodo", self.pedidos_personalidad[0], "la primera vez, el periodo de la fecha")
+        self.assertEqual(v.lista.size(), 2)
+        self.assertIn("1. Aravena Perez Ana", v.titulo_alumna.cget("text"))
+        self.assertIn("2  E/D = En desarrollo", v.leyenda.cget("text"))
+        fila, _numero, botones = v.filas["901"]
+        fila.focus_force()
+        v.update()
+        fila.event_generate("<Key-2>")
+        v.update()
+        self.assertEqual(self.mod["ip"].valores_de(v.encuesta["alumnas"][0], v.borrador)["901"], "1504")
+        self.assertIs(v.focus_get(), v.filas["902"][0], "pasa sola a la conducta siguiente")
+        botones["1505"].event_generate("<Button-1>")
+        self.assertEqual(self.mod["ip"].valores_de(v.encuesta["alumnas"][0], v.borrador)["901"], "1505")
+        self.assertTrue(v.lista.get(0).startswith("●"), "la lista muestra que tiene cambios sin guardar")
+        self.assertTrue(v.filas["901"][1].cget("text").startswith("●"))
+        self.assertIn("1 con cambios sin guardar", v.estado.cget("text"))
+        v.destroy()
+
+    def test_personalidad_el_borrador_sobrevive_a_cerrar_la_ventana(self):
+        v = self._ventana_personalidad()
+        v._elegir("902", "1506")
+        v.observacion.insert("1.0", "Muy atenta")
+        v._anotar_observacion()
+        v._siguiente()
+        self.assertEqual(v.actual, 1)
+        self.assertEqual(v.observacion.get("1.0", "end").strip(), "", "cada alumna con su observación")
+        v._siguiente()
+        self.assertTrue(v.lista.get(1).startswith("✓"), "la que se deja queda marcada en la lista")
+        self.assertTrue(v.lista.get(0).startswith("●"), "con cambios sin guardar, el punto manda")
+        self.assertLessEqual(v.winfo_reqheight(), v.winfo_screenheight(), "cabe en la pantalla")
+        v.destroy()
+        otra = self._abrir_personalidad()
+        self.assertEqual(otra.actual, 0, "con todas revisadas, parte desde la primera")
+        ana = otra.encuesta["alumnas"][0]
+        self.assertEqual(self.mod["ip"].valores_de(ana, otra.borrador)["902"], "1506")
+        self.assertEqual(self.mod["ip"].observacion_de(ana, otra.borrador), "Muy atenta")
+        self.assertIn("--periodo", self.pedidos_personalidad[-1], "recuerda el periodo elegido")
+        otra.destroy()
+
+    def test_personalidad_guardar_envia_solo_los_cambios_con_vista_previa(self):
+        v = self._ventana_personalidad()
+        previas = []
+        self.enterContext(mock.patch.dict(self.mod, {"VistaPrevia": lambda m, h, c: previas.append(h)}))
+        v._guardar_en_webclass()
+        self.assertIn("No hay nada que guardar", v.estado.cget("text"))
+        self.assertEqual(previas, [])
+        v._elegir("903", "1505")
+        v._guardar_en_webclass()
+        self.assertEqual(len(previas), 1)
+        self.assertIn("personalidad --datos", previas[0]["destino"])
+        self.assertEqual(previas[0]["vista_previa"], "simular")
+        with open(os.path.join(self.carpeta, "personalidad", "cambios.json"), encoding="utf-8") as f:
+            cambios = json.load(f)
+        self.assertEqual([(a["id"], a["valores"]) for a in cambios["alumnas"]], [("101", {"903": "1505"})])
+        self.assertFalse(v.winfo_exists())
+
+    def test_personalidad_informes_en_word(self):
+        v = self._ventana_personalidad()
+        abiertos = []
+        self.enterContext(mock.patch.object(os, "startfile", lambda r: abiertos.append(r), create=True))
+        v._elegir("901", "1506")
+        v._informes(todas=True)
+        self._esperar(lambda: "✓" in v.estado.cget("text"))
+        self.assertIn("2 informes", v.estado.cget("text"))
+        self.assertIn("aún no guardas", v.estado.cget("text"))
+        carpeta = os.path.join(self.carpeta, "Documents", "Informes de personalidad", "5BA Segundo Semestre 2026")
+        self.assertEqual(sorted(os.listdir(carpeta)), ["01 Aravena Perez Ana.docx", "02 Bustos Rios Luz.docx"])
+        self.assertEqual(abiertos, [carpeta])
+        v._informes(todas=False)
+        self._esperar(lambda: "✓ 1 informe " in v.estado.cget("text"))
+        self.assertTrue(abiertos[-1].endswith("01 Aravena Perez Ana.docx"))
+        v.destroy()
+
+    def test_personalidad_dice_si_no_pudo_leer(self):
+        v = self._ventana_personalidad(falla="sin internet")
+        self._esperar(lambda: "No pude leer" in v.estado.cget("text"))
+        self.assertIn("5BA: sin internet", v.estado.cget("text"))
+        v._siguiente()                     # sin encuesta, los botones no hacen nada
+        v._informes(todas=True)
+        v.destroy()
+
+    def test_el_boton_abre_el_informe_de_personalidad(self):
+        """Viene en la plantilla y en los botones nuevos: a quien ya tiene la barra se le suma al abrirla."""
+        with open(os.path.join(self.mod["CARPETA"], "herramientas.json"), encoding="utf-8-sig") as f:
+            boton = next(b for b in json.load(f) if b.get("tipo") == "personalidad")
+        import instalar
+        self.assertIn(boton["nombre"], instalar.BOTONES_NUEVOS)
+        self._ventana_personalidad()
+        for w in self.barra.winfo_children():
+            if isinstance(w, self.mod["VentanaPersonalidad"]):
+                w.destroy()
+        self.mod["abrir"](boton, self.barra)
+        abiertas = self._esperar_ventana("VentanaPersonalidad")
+        self.assertEqual(len(abiertas), 1)
+        abiertas[0].destroy()
 
     def test_al_abrir_suma_los_botones_de_fabrica_que_falten(self):
         """Si la actualización no terminó sus pasos (pip sin internet), la barra misma agrega «Planificar»."""

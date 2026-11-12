@@ -204,6 +204,23 @@ el apoderado (hay una casilla para cambiarlo). Webclass responde un número al g
 no lo hace, esa alumna queda pendiente y se dice en el informe. Lo que guarda es lo mismo
 que el botón Guardar de Libro digital > Observaciones. Incidentes y entrevistas no están.
 
+Avisos (⚙ Ajustes → Profesor → «Avisos de observaciones del libro»): cada 10 minutos
+`observar --vigilar 5BA,… --salida …` lee la lista de los cursos elegidos (solo lectura) y la barra
+avisa lo que registraron otros profesores. La primera vez solo anota lo que ya había.
+
+## Informe de personalidad
+
+Botón **Informe de personalidad** (`personalidad`). En WebClass (Informes > Personalidad) es una
+grilla de alumnas por conductas con un selector por celda (1302 en un curso de 42). La barra lee
+el curso entero de una vez (`personalidad --curso 5BA --salida p.json`, solo lectura, unos 15 s) y
+se responde alumna por alumna: conductas agrupadas por área, un botón por calificación, ↑ ↓ y 1 a 4
+con el teclado, y la observación del periodo. Lo respondido queda en un borrador en `datos\personalidad\`
+hasta guardarlo. «Guardar en WebClass» (`personalidad --datos cambios.json`) vuelve a leer la grilla,
+escribe solo las celdas distintas (lo mismo que el selector de WebClass) y la observación, y lo
+comprueba leyendo otra vez. Solo puede enviar esas dos escrituras: el mismo archivo de WebClass borra
+conductas y calificadores con otros casos, y esos no salen nunca. «Word» crea el informe de cada
+alumna en Documentos\Informes de personalidad\.
+
 ## Planificar (sin IA)
 
 Botón **Planificar** (`planificar`): la barra ordena y completa, el contenido lo escribes tú.

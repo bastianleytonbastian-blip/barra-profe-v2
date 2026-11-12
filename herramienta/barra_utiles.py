@@ -1636,6 +1636,36 @@ def problemas_de_observacion(curso: str, alumnas: list[str], tipo: int, fecha: s
     return problemas
 
 
+LARGO_TEXTO_AVISO = 300         # en la tarjeta «Avisos»; una observación puede tener hasta 1500 letras
+
+
+def avisos_de_observaciones(estado: dict, leidos: set) -> list[dict]:
+    """Las observaciones nuevas que el docente no ha marcado «Listo», con la forma de un aviso de la tarjeta «Avisos».
+
+    `estado` es lo que deja `observar --vigilar`.
+    """
+    avisos = []
+    for o in estado.get("nuevas") or []:
+        if not isinstance(o, dict) or not o.get("id") or o["id"] in leidos:
+            continue
+        alumnas = o.get("alumnas") or []
+        quienes = ", ".join(alumnas[:2]) + (f" y {len(alumnas) - 2} más" if len(alumnas) > 2 else "")
+        texto = o.get("texto") or ""
+        if len(texto) > LARGO_TEXTO_AVISO:
+            texto = texto[:LARGO_TEXTO_AVISO].rstrip() + "…"
+        titulo = f"Observación {(o.get('tipo') or '').lower()}".strip()
+        avisos.append({"id": o["id"], "tipo": "observacion", "titulo": f"{titulo} · {o.get('curso') or ''}",
+                       "de": o.get("profesor") or "", "texto": f"{quienes}: {texto}" if quienes else texto,
+                       "creado": o.get("creado") or ""})
+    return avisos
+
+
+def titulo_de_aviso(aviso: dict) -> str:
+    """El encabezado de un aviso de la tarjeta: qué es y de quién viene."""
+    que = aviso.get("titulo") or ("Aviso de hoy" if aviso["tipo"] == "aviso" else "Mensaje")
+    return que + (f" de {aviso['de']}" if aviso.get("de") else "")
+
+
 _CURSO_EN_NOMBRE = re.compile(r"(?<![A-Za-z0-9])(?:[1-8]B[AB]|[1-4]M[AB]|PKA|KA)(?![A-Za-z0-9])", re.I)
 
 
